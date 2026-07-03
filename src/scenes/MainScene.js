@@ -172,11 +172,16 @@ export class MainScene extends Phaser.Scene {
         });
 
         // Continue button
-        const hasSave = !!localStorage.getItem('paintSheep_save');
+        const pack = localStorage.getItem('paintSheep_stagePack') || 'NoMaxStages';
+        const progressKey = `paintSheep_progress_${pack}`;
+        const savedStage = parseInt(localStorage.getItem(progressKey)) || 0;
+        const hasSave = savedStage > 0;
         const continueAlpha = hasSave ? 1 : 0.4;
-        this._createButton(width / 2, btnStartY + (btnH + btnGap) * 2, btnW, btnH, '이어하기', 0x8e44ad, () => {
+        this._createButton(width / 2, btnStartY + (btnH + btnGap) * 2, btnW, btnH,
+            hasSave ? `이어하기 (Stage ${savedStage})` : '이어하기', 0x8e44ad, () => {
             if (!hasSave) return;
-            // TODO: load saved data
+            const level = savedStage + CONFIG.TUTORIAL_COUNT - 1;
+            this.scene.start('GameScene', { level });
         }, continueAlpha, !hasSave);
 
         // Settings button (gear icon top-right)
@@ -191,9 +196,7 @@ export class MainScene extends Phaser.Scene {
 
         const { width, height } = this.scale;
         const panelW = width * 0.88;
-        const panelH = height * 0.78;
         const panelX = (width - panelW) / 2;
-        const panelY = (height - panelH) / 2;
 
         this.settingsPanel = this.add.container(0, 0).setDepth(100);
 
@@ -204,51 +207,63 @@ export class MainScene extends Phaser.Scene {
         dim.setInteractive(new Phaser.Geom.Rectangle(-100, -100, width + 200, height + 200), Phaser.Geom.Rectangle.Contains);
         this.settingsPanel.add(dim);
 
-        // Panel
+        // Calculate layout dimensions first
+        const cardW = panelW * 0.38;
+        const gap = panelW * 0.05;
+        const blockSizeCalc = Math.min(cardW * 0.35, 36);
+        const colorCardH = 15 + blockSizeCalc * 4 + 6 * 3 + 16 + 15;
+        const cbCardH = 15 + blockSizeCalc * 3 + 6 * 2 + 16 + 15;
+
+        // Compute total panel height
+        const topPadding = 30;
+        const sectionGap = 24;
+        let contentH = topPadding + 24; // title
+        contentH += 10 + colorCardH; // color mode cards
+        contentH += sectionGap + 24 + 10 + cbCardH; // cb section
+        contentH += sectionGap + 24 + 10 + 36; // pack section
+        contentH += 20 + 36 + 20; // close button + bottom padding
+        const panelH = contentH;
+        const panelY = (height - panelH) / 2;
+
+        // Panel background
         const panel = this.add.graphics();
         panel.fillStyle(0xffffff, 0.97);
         panel.fillRoundedRect(panelX, panelY, panelW, panelH, 16);
         this.settingsPanel.add(panel);
 
-        // Title
-        const title = this.add.text(width / 2, panelY + 30, '색상 표시 방법', {
+        // --- Color mode section ---
+        let cy = panelY + topPadding;
+        const title = this.add.text(width / 2, cy, '색상 표시 방법', {
             fontSize: '20px', color: '#333', fontFamily: 'Jua', fontStyle: 'bold'
         }).setOrigin(0.5);
         this.settingsPanel.add(title);
 
-        // Current mode
         const currentMode = localStorage.getItem('paintSheep_colorMode') || 'mixed';
-
-        // Option cards
-        const cardW = panelW * 0.38;
-        const cardY = panelY + 60;
-        const gap = panelW * 0.05;
         const leftX = width / 2 - cardW - gap / 2;
         const rightX = width / 2 + gap / 2;
 
-        // Calculate actual card height (same logic as _drawOptionCard)
-        const blockSizeCalc = Math.min(cardW * 0.35, 36);
-        const colorCardH = 15 + blockSizeCalc * 4 + 6 * 3 + 16 + 15;
+        cy += 34;
+        this._drawOptionCard(leftX, cy, cardW, null, 'mixed', '색 혼합', currentMode === 'mixed');
+        this._drawOptionCard(rightX, cy, cardW, null, 'diagonal', '대각선 분할', currentMode === 'diagonal');
+        cy += colorCardH;
 
-        this._drawOptionCard(leftX, cardY, cardW, null, 'mixed', '색 혼합', currentMode === 'mixed');
-        this._drawOptionCard(rightX, cardY, cardW, null, 'diagonal', '대각선 분할', currentMode === 'diagonal');
-
-        // Color blind mode section
+        // --- Color blind section ---
+        cy += sectionGap;
         const cbMode = localStorage.getItem('paintSheep_colorBlind') === 'true';
-        const cbTitleY = cardY + colorCardH + 30;
-        const cbTitle = this.add.text(width / 2, cbTitleY, '색약 모드', {
+        const cbTitle = this.add.text(width / 2, cy, '색약 모드', {
             fontSize: '20px', color: '#333', fontFamily: 'Jua', fontStyle: 'bold'
         }).setOrigin(0.5);
         this.settingsPanel.add(cbTitle);
 
-        const cbCardY = cbTitleY + 30;
-        this._drawCbCard(leftX, cbCardY, cardW, 'off', cbMode === false, currentMode);
-        this._drawCbCard(rightX, cbCardY, cardW, 'on', cbMode === true, currentMode);
+        cy += 30;
+        this._drawCbCard(leftX, cy, cardW, 'off', cbMode === false, currentMode);
+        this._drawCbCard(rightX, cy, cardW, 'on', cbMode === true, currentMode);
+        cy += cbCardH;
 
-        // Stage pack section
+        // --- Stage pack section ---
+        cy += sectionGap;
         const currentPack = localStorage.getItem('paintSheep_stagePack') || 'NoMaxStages';
-        const packTitleY = cbCardY + 80;
-        const packTitle = this.add.text(width / 2, packTitleY, '스테이지 팩', {
+        const packTitle = this.add.text(width / 2, cy, '스테이지 팩', {
             fontSize: '20px', color: '#333', fontFamily: 'Jua', fontStyle: 'bold'
         }).setOrigin(0.5);
         this.settingsPanel.add(packTitle);
@@ -259,7 +274,7 @@ export class MainScene extends Phaser.Scene {
             { key: 'MegaStages', label: 'Mega' },
         ];
         const packBtnW = (panelW - gap * 4) / 3;
-        const packBtnY = packTitleY + 32;
+        cy += 30;
         const packStartX = panelX + gap;
 
         for (let i = 0; i < packs.length; i++) {
@@ -267,15 +282,15 @@ export class MainScene extends Phaser.Scene {
             const isSelected = currentPack === packs[i].key;
             const btnGfx = this.add.graphics();
             btnGfx.fillStyle(isSelected ? 0x4CAF50 : 0xe0e0e0, 1);
-            btnGfx.fillRoundedRect(bx, packBtnY, packBtnW, 36, 8);
+            btnGfx.fillRoundedRect(bx, cy, packBtnW, 36, 8);
             this.settingsPanel.add(btnGfx);
 
-            const btnText = this.add.text(bx + packBtnW / 2, packBtnY + 18, packs[i].label, {
+            const btnText = this.add.text(bx + packBtnW / 2, cy + 18, packs[i].label, {
                 fontSize: '14px', color: isSelected ? '#fff' : '#333', fontFamily: 'Jua', fontStyle: 'bold'
             }).setOrigin(0.5);
             this.settingsPanel.add(btnText);
 
-            const btnZone = this.add.zone(bx + packBtnW / 2, packBtnY + 18, packBtnW, 36).setInteractive();
+            const btnZone = this.add.zone(bx + packBtnW / 2, cy + 18, packBtnW, 36).setInteractive();
             btnZone.on('pointerdown', () => {
                 localStorage.setItem('paintSheep_stagePack', packs[i].key);
                 this.settingsPanel.destroy(true);
@@ -284,18 +299,19 @@ export class MainScene extends Phaser.Scene {
             });
             this.settingsPanel.add(btnZone);
         }
+        cy += 36;
 
         // Close button
-        const closeY = panelY + panelH - 50;
+        cy += 20;
         const closeBg = this.add.graphics();
         closeBg.fillStyle(0x999999, 1);
-        closeBg.fillRoundedRect(width / 2 - 50, closeY, 100, 36, 8);
+        closeBg.fillRoundedRect(width / 2 - 50, cy, 100, 36, 8);
         this.settingsPanel.add(closeBg);
-        const closeText = this.add.text(width / 2, closeY + 18, '닫기', {
+        const closeText = this.add.text(width / 2, cy + 18, '닫기', {
             fontSize: '16px', color: '#fff', fontFamily: 'Jua', fontStyle: 'bold'
         }).setOrigin(0.5);
         this.settingsPanel.add(closeText);
-        const closeZone = this.add.zone(width / 2, closeY + 18, 100, 36).setInteractive();
+        const closeZone = this.add.zone(width / 2, cy + 18, 100, 36).setInteractive();
         closeZone.on('pointerdown', () => {
             this.settingsPanel.destroy(true);
             this.settingsPanel = null;

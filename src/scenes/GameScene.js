@@ -182,6 +182,16 @@ export class GameScene extends Phaser.Scene {
         this.megaScore = 0;
         this._megaScoreHistory = [];
 
+        if (_getStageNum(this.currentLevel) > 0) {
+            const pack = localStorage.getItem('paintSheep_stagePack') || 'NoMaxStages';
+            const stageNum = _getStageNum(this.currentLevel);
+            const key = `paintSheep_progress_${pack}`;
+            const saved = parseInt(localStorage.getItem(key)) || 0;
+            if (stageNum > saved) {
+                localStorage.setItem(key, stageNum);
+            }
+        }
+
         this._createHeader();
         this._createTutorialMessage();
         this._createGrid();

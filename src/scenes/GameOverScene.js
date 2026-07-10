@@ -1,15 +1,12 @@
+import { saveProgress, loadProgress, submitStageScore, submitMegaScore } from '../storage.js';
+
 export class GameOverScene extends Phaser.Scene {
     constructor() {
         super({ key: 'GameOverScene' });
     }
 
     preload() {
-        const base = window.location.pathname.endsWith('/')
-            ? window.location.pathname
-            : window.location.pathname.replace(/\/[^/]*$/, '/');
-        const a = base + 'assets/';
-        this.load.setBaseURL('');
-        this.load.setPath('');
+        const a = (window.__PAINTSHEEP_BASE || '') + 'assets/';
         this.load.image('wolf', a + 'wolf.png');
     }
 
@@ -20,16 +17,19 @@ export class GameOverScene extends Phaser.Scene {
         this.retryPuzzle = data.retryPuzzle || null;
         this.isTutorial = data.isTutorial || false;
         this.isMegaStage = data.isMegaStage || false;
+        this.megaStageNum = data.megaStageNum || 0;
         this.megaScore = data.megaScore || 0;
         this.megaMovesUsed = data.megaMovesUsed || 0;
         this.megaMovesLeft = data.megaMovesLeft || 0;
     }
 
-    create() {
+    async create() {
+        await document.fonts.ready;
+        this.add.text(-100, -100, 'X', { fontFamily: 'Jua' }).destroy();
         const { width, height } = this.scale;
 
         this.input.enabled = false;
-        this.time.delayedCall(500, () => { this.input.enabled = true; });
+        this.time.delayedCall(300, () => { this.input.enabled = true; });
 
         this.add.graphics()
             .fillStyle(0x000000, 0.6)
@@ -67,11 +67,11 @@ export class GameOverScene extends Phaser.Scene {
                 fontSize: '15px', color: '#777', fontFamily: 'Jua'
             }).setOrigin(0.5);
         } else if (this.cleared) {
-            this.add.text(width / 2, panelY + 40, '잘했어요!', {
+            this.add.text(width / 2, panelY + 40, '최고에요!', {
                 fontSize: '28px', color: '#27ae60', fontFamily: 'Jua', fontStyle: 'bold'
             }).setOrigin(0.5);
 
-            this.add.text(width / 2, panelY + 78, '늑대가 쫄쫄 굶고있어요', {
+            this.add.text(width / 2, panelY + 78, '완벽하게 모든 양을 구했어요.', {
                 fontSize: '16px', color: '#555', fontFamily: 'Jua'
             }).setOrigin(0.5);
 
@@ -103,7 +103,38 @@ export class GameOverScene extends Phaser.Scene {
         const btnGap = 12;
         let btnY = panelY + panelH - 170;
 
-        if (this.isTutorial) {
+        if (this.isMegaStage) {
+            // Submit mega score
+            if (this.megaStageNum > 0) {
+                submitMegaScore(this.megaStageNum, this.megaScore);
+            }
+
+            // Retry
+            this.add.graphics()
+                .fillStyle(0x3498db, 1)
+                .fillRoundedRect(btnX, btnY, btnW, btnH, 10);
+            this.add.text(width / 2, btnY + btnH / 2, 'RETRY', {
+                fontSize: '18px', color: '#fff', fontFamily: 'Jua', fontStyle: 'bold'
+            }).setOrigin(0.5);
+            this.add.zone(width / 2, btnY + btnH / 2, btnW, btnH)
+                .setInteractive()
+                .on('pointerdown', () => this.scene.start('GameScene', {
+                    megaMode: true, megaStageNum: this.megaStageNum
+                }));
+
+            btnY += btnH + btnGap;
+
+            // Home
+            this.add.graphics()
+                .fillStyle(0x27ae60, 1)
+                .fillRoundedRect(btnX, btnY, btnW, btnH, 10);
+            this.add.text(width / 2, btnY + btnH / 2, 'HOME', {
+                fontSize: '18px', color: '#fff', fontFamily: 'Jua', fontStyle: 'bold'
+            }).setOrigin(0.5);
+            this.add.zone(width / 2, btnY + btnH / 2, btnW, btnH)
+                .setInteractive()
+                .on('pointerdown', () => this.scene.start('EventScene'));
+        } else if (this.isTutorial) {
             btnY = panelY + panelH - 70;
             this.add.graphics()
                 .fillStyle(0x27ae60, 1)
@@ -113,7 +144,16 @@ export class GameOverScene extends Phaser.Scene {
             }).setOrigin(0.5);
             this.add.zone(width / 2, btnY + btnH / 2, btnW, btnH)
                 .setInteractive()
-                .on('pointerdown', () => this.scene.start('GameScene', { level: this.level + 1 }));
+                .on('pointerdown', () => {
+                    const nextStage = this.level + 2;
+                    const isPerfect = this.cleared && this.remainingSheep === 0;
+                    loadProgress().then(prev => {
+                        const perfectCount = ((prev && prev.perfectCount) || 0) + (isPerfect ? 1 : 0);
+                        saveProgress({ stage: nextStage, perfectCount });
+                        submitStageScore(nextStage - 1, perfectCount);
+                    });
+                    this.scene.start('GameScene', { level: this.level + 1 });
+                });
         } else {
             // Retry button
             this.add.graphics()
@@ -137,7 +177,16 @@ export class GameOverScene extends Phaser.Scene {
             }).setOrigin(0.5);
             this.add.zone(width / 2, btnY + btnH / 2, btnW, btnH)
                 .setInteractive()
-                .on('pointerdown', () => this.scene.start('GameScene', { level: this.level + 1 }));
+                .on('pointerdown', () => {
+                    const nextStage = this.level + 2;
+                    const isPerfect = this.cleared && this.remainingSheep === 0;
+                    loadProgress().then(prev => {
+                        const perfectCount = ((prev && prev.perfectCount) || 0) + (isPerfect ? 1 : 0);
+                        saveProgress({ stage: nextStage, perfectCount });
+                        submitStageScore(nextStage - 1, perfectCount);
+                    });
+                    this.scene.start('GameScene', { level: this.level + 1 });
+                });
 
             if (!this.isMegaStage) {
                 btnY += btnH + btnGap;
@@ -161,4 +210,5 @@ export class GameOverScene extends Phaser.Scene {
             }
         }
     }
+
 }

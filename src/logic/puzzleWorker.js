@@ -17,6 +17,7 @@ self.onmessage = (e) => {
         maxMoves: puzzle.maxMoves,
         solution: puzzle.solution,
         solutionStates: puzzle.solutionStates,
+        solutionPlankStates: puzzle.solutionPlankStates,
         allMoves: puzzle.allMoves,
         maxComponents: puzzle.maxComponents,
         plankChance: puzzle.plankChance,

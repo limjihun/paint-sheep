@@ -37,15 +37,15 @@ export const CONFIG = {
         BLACK: '검정',
     },
 
-    TUTORIAL_COUNT: 6,
+    TUTORIAL_COUNT: 0,
 
     GRID_COLS: 5,
 
     ITEM_SLOTS: 4,
 
     LAYOUT: {
-        HEADER_RATIO: 0.08,
-        GRID_RATIO: 0.68,
+        HEADER_RATIO: 0.10,
+        GRID_RATIO: 0.66,
         PALETTE_RATIO: 0.12,
         ITEM_RATIO: 0.12,
     },

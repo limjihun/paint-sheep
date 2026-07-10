@@ -7,12 +7,7 @@ export class SolutionScene extends Phaser.Scene {
     }
 
     preload() {
-        const base = window.location.pathname.endsWith('/')
-            ? window.location.pathname
-            : window.location.pathname.replace(/\/[^/]*$/, '/');
-        const a = base + 'assets/';
-        this.load.setBaseURL('');
-        this.load.setPath('');
+        const a = (window.__PAINTSHEEP_BASE || '') + 'assets/';
         this.load.image('sheep', a + 'sheep.png');
         this.load.image('sunglasses', a + 'sunglasses.png');
     }
@@ -28,7 +23,9 @@ export class SolutionScene extends Phaser.Scene {
         this.movesLeft = data.movesLeft || 0;
     }
 
-    create() {
+    async create() {
+        await document.fonts.ready;
+        this.add.text(-100, -100, 'X', { fontFamily: 'Jua' }).destroy();
         const { width, height } = this.scale;
 
         this.add.graphics()
@@ -113,6 +110,64 @@ export class SolutionScene extends Phaser.Scene {
 
     _buildStepStates() {
         this.stepStates = this.solutionStates;
+        this._buildPlankStates();
+    }
+
+    _buildPlankStates() {
+        if (this.puzzle.solutionPlankStates && this.puzzle.solutionPlankStates.length > 0) {
+            this.plankStates = this.puzzle.solutionPlankStates.map(ps =>
+                ps.map(p => ({ row: p.row, startCol: p.startCol ?? p.col, endCol: p.endCol ?? p.col }))
+            );
+            return;
+        }
+
+        const rawPlanks = this.puzzle.initialPlanks || this.puzzle.planks || [];
+        const initialPlanks = rawPlanks.map(p => ({
+            row: p.row,
+            startCol: p.startCol ?? p.col,
+            endCol: p.endCol ?? p.col
+        }));
+        this.plankStates = [initialPlanks.map(p => ({ ...p }))];
+
+        if (!this.solution.length || !initialPlanks.length) return;
+
+        const rows = this.puzzle.rows;
+
+        for (let step = 0; step < this.solution.length; step++) {
+            const grid = this.stepStates[step + 1];
+            if (!grid) {
+                this.plankStates.push(this.plankStates[this.plankStates.length - 1]);
+                continue;
+            }
+            const planks = this.plankStates[step].map(p => ({ ...p }));
+
+            let changed = true;
+            while (changed) {
+                changed = false;
+                for (const plank of planks) {
+                    let supported = false;
+                    for (let col = plank.startCol; col <= plank.endCol; col++) {
+                        if (plank.row + 1 >= rows) { supported = true; break; }
+                        const below = grid[plank.row + 1]?.[col];
+                        if (below && below.alive) { supported = true; break; }
+                        if (planks.some(p => p !== plank && p.row === plank.row + 1 && col >= p.startCol && col <= p.endCol)) {
+                            supported = true; break;
+                        }
+                    }
+                    if (!supported) {
+                        let canDrop = true;
+                        for (let col = plank.startCol; col <= plank.endCol; col++) {
+                            if (plank.row + 1 >= rows) { canDrop = false; break; }
+                        }
+                        if (canDrop) {
+                            plank.row += 1;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            this.plankStates.push(planks);
+        }
     }
 
     _renderStep() {
@@ -203,13 +258,16 @@ export class SolutionScene extends Phaser.Scene {
             }
         }
 
-        // Draw planks
-        const planks = this.puzzle.planks || this.puzzle.initialPlanks || [];
+        // Draw planks at current step position
+        const planks = (this.plankStates && this.plankStates[this.currentStep]) ||
+            this.puzzle.planks || this.puzzle.initialPlanks || [];
         if (planks.length > 0) {
             const plankGfx = this.add.graphics();
             for (const plank of planks) {
-                const px1 = this.gridOffsetX + plank.startCol * (this.cellSize + this.gridPadding) + 2;
-                const px2 = this.gridOffsetX + plank.endCol * (this.cellSize + this.gridPadding) + this.cellSize - 2;
+                const startCol = plank.startCol ?? plank.col;
+                const endCol = plank.endCol ?? plank.col;
+                const px1 = this.gridOffsetX + startCol * (this.cellSize + this.gridPadding) + 2;
+                const px2 = this.gridOffsetX + endCol * (this.cellSize + this.gridPadding) + this.cellSize - 2;
                 const py = this.gridOffsetY + plank.row * (this.cellSize + this.gridPadding) + this.cellSize;
                 const plankH = 4;
                 const segW = 8, gapW = 4;

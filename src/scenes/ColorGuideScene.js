@@ -10,7 +10,9 @@ export class ColorGuideScene extends Phaser.Scene {
         this.returnPuzzle = data.puzzle || null;
     }
 
-    create() {
+    async create() {
+        await document.fonts.ready;
+        this.add.text(-100, -100, 'X', { fontFamily: 'Jua' }).destroy();
         const { width, height } = this.scale;
 
         this.add.graphics()
@@ -74,7 +76,7 @@ export class ColorGuideScene extends Phaser.Scene {
         divG.lineBetween(20, dividerY, width - 20, dividerY);
 
         // Section: Mixed colors
-        this.add.text(width / 2, dividerY + 15, '혼합색 (벽 색상)', {
+        this.add.text(width / 2, dividerY + 15, '혼합색 (칸 색상)', {
             fontSize: '16px', color: '#555', fontFamily: 'Jua', fontStyle: 'bold'
         }).setOrigin(0.5);
 

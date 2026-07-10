@@ -1,22 +1,13 @@
 import { CONFIG } from '../config.js';
-import tutorials from '../data/tutorials.json' with { type: 'json' };
 
 export class PuzzleManager {
     constructor(level) {
-        this.tutorialData = tutorials.find(t => t.level === level) || null;
+        this.tutorialData = null;
 
         const gameLevel = Math.max(0, level - CONFIG.TUTORIAL_COUNT);
-
-        if (this.tutorialData) {
-            this.cols = this.tutorialData.cols;
-            this.rows = this.tutorialData.rows;
-        } else {
-            const levelConfig = CONFIG.LEVELS[gameLevel] || CONFIG.LEVELS[CONFIG.LEVELS.length - 1];
-            this.cols = CONFIG.GRID_COLS;
-            this.rows = levelConfig.rows;
-        }
-
         const levelConfig = CONFIG.LEVELS[gameLevel] || CONFIG.LEVELS[CONFIG.LEVELS.length - 1];
+        this.cols = CONFIG.GRID_COLS;
+        this.rows = levelConfig.rows;
         this.maxComponents = levelConfig.maxComponents || 1;
         this.plankChance = levelConfig.plankChance || 0;
         this.dirtyChance = levelConfig.dirtyChance || 0;
@@ -173,7 +164,7 @@ export class PuzzleManager {
         this.planks = [];
         if (this.plankChance > 0) {
             const usedCols = new Set();
-            for (let row = 0; row < this.rows - 1; row++) {
+            for (let row = 0; row < this.rows - 2; row++) {
                 for (let col = 0; col < this.cols - 1; col++) {
                     if (Math.random() >= this.plankChance) continue;
                     const a = this.grid[row][col];
@@ -181,6 +172,10 @@ export class PuzzleManager {
                     if (a.type !== 'normal' || b.type !== 'normal') continue;
 
                     if (usedCols.has(col) || usedCols.has(col + 1)) continue;
+
+                    const below0 = this.grid[row + 1][col];
+                    const below1 = this.grid[row + 1][col + 1];
+                    if (a.wallColor === below0.wallColor || b.wallColor === below1.wallColor) continue;
 
                     this.planks.push({ row, startCol: col, endCol: col + 1 });
                     usedCols.add(col);
@@ -195,6 +190,7 @@ export class PuzzleManager {
         const result = solver.solve();
         this.solution = result.path;
         this.solutionStates = result.states;
+        this.solutionPlankStates = result.plankStates;
         this.allMoves = result.allMoves;
         this.minMoves = this.solution.length;
         this.maxMoves = this.minMoves;
@@ -213,12 +209,13 @@ export class PuzzleManager {
 
     static fromWorkerData(data) {
         const puzzle = Object.create(PuzzleManager.prototype);
-        puzzle.grid = data.grid;
-        puzzle.initialGrid = data.initialGrid;
+        const copyGrid = g => g.map(row => row.map(cell => ({ ...cell, sheepComponents: [...(cell.sheepComponents || [])] })));
+        puzzle.grid = copyGrid(data.grid);
+        puzzle.initialGrid = copyGrid(data.initialGrid);
         puzzle.rows = data.rows;
         puzzle.cols = data.cols;
-        puzzle.planks = data.planks || [];
-        puzzle.initialPlanks = (data.planks || []).map(p => ({ ...p }));
+        puzzle.planks = (data.planks || []).map(p => ({ row: p.row, startCol: p.startCol ?? p.col ?? 0, endCol: p.endCol ?? p.col ?? 0 }));
+        puzzle.initialPlanks = puzzle.planks.map(p => ({ ...p }));
         puzzle.movesLeft = data.movesLeft;
         puzzle.initialMovesLeft = data.initialMovesLeft;
         puzzle.totalBlocks = data.totalBlocks;
@@ -228,6 +225,7 @@ export class PuzzleManager {
         puzzle.maxMoves = data.maxMoves;
         puzzle.solution = data.solution;
         puzzle.solutionStates = data.solutionStates;
+        puzzle.solutionPlankStates = data.solutionPlankStates;
         puzzle.allMoves = data.allMoves;
         puzzle.maxComponents = data.maxComponents;
         puzzle.plankChance = data.plankChance;
@@ -244,6 +242,7 @@ export class PuzzleManager {
         this.movesLeft = this.initialMovesLeft;
         this.clearedBlocks = 0;
         this.moveHistory = [];
+        this._tutorialStepIndex = 0;
     }
 
     static resolveColor(components) {
@@ -274,11 +273,11 @@ export class PuzzleManager {
             if (cell.masked) {
                 cell.masked = false;
                 painted.push({ row, col, maskedConsumed: true });
-            } else {
-                if (!cell.sheepComponents.includes(component)) {
-                    cell.sheepComponents.push(component);
-                }
-                painted.push({ row, col, maskedConsumed: false });
+            } else if (!cell.sheepComponents.includes(component)) {
+                cell.sheepComponents.push(component);
+                const target = CONFIG.MIXED_COLORS[cell.wallColor];
+                const needed = cell.type === 'rainbow' || (target && target.components.includes(component));
+                painted.push({ row, col, maskedConsumed: false, needed });
             }
         }
 
@@ -367,6 +366,9 @@ export class PuzzleManager {
         const cell = this.grid[row][col];
         if (!cell || !cell.alive) return null;
 
+        const snapshot = this._snapshotGrid();
+        this.moveHistory.push({ gridSnapshot: snapshot, planksSnapshot: this._snapshotPlanks(), prevClearedBlocks: this.clearedBlocks, isItem: 'singlePaint' });
+
         if (cell.type === 'dirty') {
             cell.sheepComponents = [];
         } else if (cell.type === 'rainbow') {
@@ -387,43 +389,33 @@ export class PuzzleManager {
         if (!cell || !cell.alive) return false;
         if (cell.masked) return false;
         if (cell.type === 'dirty') return false;
+
+        const snapshot = this._snapshotGrid();
+        this.moveHistory.push({ gridSnapshot: snapshot, planksSnapshot: this._snapshotPlanks(), prevClearedBlocks: this.clearedBlocks, isItem: 'mask' });
+
         cell.masked = true;
         return true;
     }
 
     herdSheep(direction) {
-        const activeCols = [];
-        for (let col = 0; col < this.cols; col++) {
-            let hasAlive = false;
-            for (let row = 0; row < this.rows; row++) {
-                if (this.grid[row][col].alive) { hasAlive = true; break; }
+        const snapshot = this._snapshotGrid();
+        this.moveHistory.push({ gridSnapshot: snapshot, planksSnapshot: this._snapshotPlanks(), prevClearedBlocks: this.clearedBlocks, isItem: 'herd' });
+
+        for (let row = 0; row < this.rows; row++) {
+            const alive = [];
+            for (let col = 0; col < this.cols; col++) {
+                if (this.grid[row][col].alive) alive.push(this.grid[row][col]);
             }
-            if (hasAlive) activeCols.push(col);
-        }
-
-        const newGrid = Array.from({ length: this.rows }, () =>
-            Array.from({ length: this.cols }, () => ({
-                wallColor: null, sheepComponents: [], alive: false, type: 'normal'
-            }))
-        );
-
-        let targetCols;
-        if (direction === 'left') {
-            targetCols = activeCols.map((_, i) => i);
-        } else {
-            const startCol = this.cols - activeCols.length;
-            targetCols = activeCols.map((_, i) => startCol + i);
-        }
-
-        for (let i = 0; i < activeCols.length; i++) {
-            const srcCol = activeCols[i];
-            const dstCol = targetCols[i];
-            for (let row = 0; row < this.rows; row++) {
-                newGrid[row][dstCol] = this.grid[row][srcCol];
+            const emptyCell = () => ({ wallColor: null, sheepComponents: [], alive: false, type: 'normal' });
+            const newRow = Array.from({ length: this.cols }, emptyCell);
+            if (direction === 'left') {
+                for (let i = 0; i < alive.length; i++) newRow[i] = alive[i];
+            } else {
+                const start = this.cols - alive.length;
+                for (let i = 0; i < alive.length; i++) newRow[start + i] = alive[i];
             }
+            this.grid[row] = newRow;
         }
-
-        this.grid = newGrid;
     }
 
     _isOnPlank(row, col) {
@@ -535,9 +527,9 @@ export class PuzzleManager {
         this.grid = lastMove.gridSnapshot;
         this.planks = lastMove.planksSnapshot || [];
         this.clearedBlocks = lastMove.prevClearedBlocks;
-        this.movesLeft++;
+        if (!lastMove.isItem) this.movesLeft++;
 
-        return { fullRebuild: true };
+        return { fullRebuild: true, itemType: lastMove.isItem || null };
     }
 }
 
@@ -545,7 +537,12 @@ class PuzzleSolver {
     constructor(grid, rows, cols, planks) {
         this.rows = rows;
         this.cols = cols;
-        this.planks = (planks || []).map(p => ({ ...p }));
+        this.initialPlanks = (planks || []).map(p => ({
+            row: p.row,
+            startCol: p.startCol ?? p.col ?? 0,
+            endCol: p.endCol ?? p.col ?? 0,
+        }));
+        this.planks = this.initialPlanks;
         this.originalGrid = grid.map(row => row.map(cell => ({
             wallColor: cell.wallColor,
             sheepComponents: [...(cell.sheepComponents || [])],
@@ -558,27 +555,67 @@ class PuzzleSolver {
         const memo = new Map();
         const MAX_DEPTH = 15;
 
-        this._search(this.originalGrid, memo, 0, MAX_DEPTH);
+        const initState = { grid: this.originalGrid, planks: this.initialPlanks.map(p => ({...p})) };
+        this._search(initState, memo, 0, MAX_DEPTH);
 
         const path = [];
         const states = [];
-        let currentGrid = this.originalGrid;
+        const plankStates = [];
+        let current = initState;
         let depth = 0;
 
-        states.push(this._cloneGrid(currentGrid));
+        states.push(this._cloneGrid(current.grid));
+        plankStates.push(current.planks.map(p => ({...p})));
 
-        while (!this._isCleared(currentGrid) && depth < MAX_DEPTH) {
-            const key = this._encodeState(currentGrid);
+        while (!this._isCleared(current.grid) && depth < MAX_DEPTH) {
+            const key = this._encodeState(current);
             const entry = memo.get(key);
             if (!entry || !entry.bestMove) break;
 
             path.push(entry.bestMove);
-            currentGrid = this._applyMove(currentGrid, entry.bestMove);
-            states.push(this._cloneGrid(currentGrid));
+            current = this._applyMove(current, entry.bestMove);
+            states.push(this._cloneGrid(current.grid));
+            plankStates.push(current.planks.map(p => ({...p})));
             depth++;
         }
 
-        return { min: path.length, path, states, allMoves: [path.length] };
+        return { min: path.length, path, states, plankStates, allMoves: [path.length] };
+    }
+
+    _findMaxPathInGroup(startRow, startCol, groupSet, pathCells) {
+        const dirs = [[-1,0],[1,0],[0,-1],[0,1]];
+        const startKey = `${startRow},${startCol}`;
+        let bestPath = [startKey];
+        let bestNeedCount = 1;
+        const path = [startKey];
+        const visited = new Set([startKey]);
+        let needCount = 1;
+
+        const dfs = () => {
+            if (needCount > bestNeedCount) {
+                bestNeedCount = needCount;
+                bestPath = [...path];
+            }
+            if (needCount === groupSet.size) return;
+            const [r, c] = path[path.length - 1].split(',').map(Number);
+            for (const [dr, dc] of dirs) {
+                const nk = `${r+dr},${c+dc}`;
+                if (pathCells.has(nk) && !visited.has(nk)) {
+                    visited.add(nk);
+                    path.push(nk);
+                    const isNeed = groupSet.has(nk);
+                    if (isNeed) needCount++;
+                    dfs();
+                    if (bestNeedCount === groupSet.size) return;
+                    path.pop();
+                    visited.delete(nk);
+                    if (isNeed) needCount--;
+                }
+            }
+        };
+
+        dfs();
+        return bestPath;
     }
 
     _cloneGrid(grid) {
@@ -587,18 +624,18 @@ class PuzzleSolver {
         })));
     }
 
-    _search(grid, memo, depth, maxDepth) {
+    _search(state, memo, depth, maxDepth) {
         if (depth >= maxDepth) return Infinity;
 
-        const key = this._encodeState(grid);
+        const key = this._encodeState(state);
         if (memo.has(key)) return memo.get(key).min;
 
-        if (this._isCleared(grid)) {
+        if (this._isCleared(state.grid)) {
             memo.set(key, { min: 0, bestMove: null });
             return 0;
         }
 
-        const moves = this._generateMoves(grid);
+        const moves = this._generateMoves(state.grid);
 
         if (moves.length === 0) {
             memo.set(key, { min: Infinity, bestMove: null });
@@ -609,8 +646,8 @@ class PuzzleSolver {
         let bestMove = null;
 
         for (const move of moves) {
-            const newGrid = this._applyMove(grid, move);
-            const sub = this._search(newGrid, memo, depth + 1, maxDepth);
+            const newState = this._applyMove(state, move);
+            const sub = this._search(newState, memo, depth + 1, maxDepth);
 
             if (sub + 1 < bestMin) {
                 bestMin = sub + 1;
@@ -622,7 +659,8 @@ class PuzzleSolver {
         return bestMin;
     }
 
-    _encodeState(grid) {
+    _encodeState(state) {
+        const grid = state.grid;
         let key = '';
         for (let r = 0; r < this.rows; r++) {
             for (let c = 0; c < this.cols; c++) {
@@ -630,8 +668,6 @@ class PuzzleSolver {
                 if (!cell.alive) {
                     key += 'X';
                 } else {
-                    // Encode wall color + sheep components together
-                    // Wall index: O=0,P=1,G=2,B=3,R=4,Y=5,U=6,W=7,other=8
                     const wallMap = { ORANGE: 0, PURPLE: 1, GREEN: 2, BLACK: 3, RED: 4, YELLOW: 5, BLUE: 6, WHITE: 7, RAINBOW: 8 };
                     const w = wallMap[cell.wallColor] !== undefined ? wallMap[cell.wallColor] : 9;
                     let bits = 0;
@@ -643,6 +679,12 @@ class PuzzleSolver {
                     }
                     key += w.toString(16) + bits.toString(16);
                 }
+            }
+        }
+        if (state.planks.length > 0) {
+            key += '|';
+            for (const p of state.planks) {
+                key += `${p.row}${p.startCol}${p.endCol}`;
             }
         }
         return key;
@@ -669,60 +711,46 @@ class PuzzleSolver {
             }
         }
 
-        // For each component color, find all connected paths through alive cells
         for (const component of CONFIG.PALETTE) {
-            // Find cells that still need this component
             const needCells = new Set();
             const passableCells = new Set();
             for (const { row, col } of aliveCells) {
                 const cell = grid[row][col];
-                if (cell.type === 'dirty') {
-                    passableCells.add(`${row},${col}`);
-                    continue;
-                }
-                if (cell.type === 'rainbow' && cell.sheepComponents.length === 0) {
-                    needCells.add(`${row},${col}`);
-                    continue;
-                }
+                if (cell.type === 'dirty') { passableCells.add(`${row},${col}`); continue; }
+                if (cell.type === 'rainbow' && cell.sheepComponents.length === 0) { needCells.add(`${row},${col}`); continue; }
                 if (cell.type === 'rainbow') continue;
                 const target = CONFIG.MIXED_COLORS[cell.wallColor];
                 if (!target) continue;
                 if (target.components.includes(component) && !cell.sheepComponents.includes(component)) {
                     needCells.add(`${row},${col}`);
+                } else if (cell.sheepComponents.includes(component)) {
+                    passableCells.add(`${row},${col}`);
                 }
             }
-
             if (needCells.size === 0) continue;
 
-            // Group needCells using passableCells (dirty) as bridges
             const traversable = new Set([...needCells, ...passableCells]);
             const visited = new Set();
             const groups = [];
-
             for (const key of needCells) {
                 if (visited.has(key)) continue;
                 const group = [];
                 const queue = [key];
                 visited.add(key);
-
                 while (queue.length > 0) {
                     const cur = queue.shift();
                     if (needCells.has(cur)) group.push(cur);
                     const [cr, cc] = cur.split(',').map(Number);
-
                     for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
                         const nk = `${cr+dr},${cc+dc}`;
-                        if (!visited.has(nk) && traversable.has(nk)) {
-                            visited.add(nk);
-                            queue.push(nk);
-                        }
+                        if (!visited.has(nk) && traversable.has(nk)) { visited.add(nk); queue.push(nk); }
                     }
                 }
                 if (group.length > 0) groups.push(group);
             }
 
             for (const group of groups) {
-                // Include passable cells adjacent to group for path building
+                const groupSet = new Set(group);
                 const pathCells = new Set(group);
                 for (const key of group) {
                     const [cr, cc] = key.split(',').map(Number);
@@ -731,14 +759,21 @@ class PuzzleSolver {
                         if (passableCells.has(nk)) pathCells.add(nk);
                     }
                 }
-                const paths = this._findAllMaximalPaths([...pathCells]);
-                for (const path of paths) {
-                    moves.push({ component, cells: path });
+                const seen = new Set();
+                for (const startKey of group) {
+                    const [sr, sc] = startKey.split(',').map(Number);
+                    const bestPath = this._findMaxPathInGroup(sr, sc, groupSet, pathCells);
+                    const needOnly = bestPath.filter(k => groupSet.has(k));
+                    const pathKey = [...needOnly].sort().join('|');
+                    if (seen.has(pathKey)) continue;
+                    seen.add(pathKey);
+                    const cells = bestPath.map(k => { const [r,c] = k.split(',').map(Number); return {row:r,col:c}; });
+                    moves.push({ component, cells });
                 }
             }
         }
 
-        // Wash moves: only consider washing dirty cells (solver plays optimally, no wrong paints)
+        // Wash moves
         const dirtyCells = new Set();
         for (const { row, col } of aliveCells) {
             const cell = grid[row][col];
@@ -760,91 +795,27 @@ class PuzzleSolver {
                     const [cr, cc] = cur.split(',').map(Number);
                     for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
                         const nk = `${cr+dr},${cc+dc}`;
-                        if (!visited.has(nk) && dirtyCells.has(nk)) {
-                            visited.add(nk);
-                            queue.push(nk);
-                        }
+                        if (!visited.has(nk) && dirtyCells.has(nk)) { visited.add(nk); queue.push(nk); }
                     }
                 }
                 groups.push(group);
             }
             for (const group of groups) {
-                const paths = this._findAllMaximalPaths(group);
-                for (const path of paths) {
-                    moves.push({ component: 'WASH', cells: path });
-                }
+                const cells = group.map(k => { const [r,c] = k.split(',').map(Number); return {row:r,col:c}; });
+                moves.push({ component: 'WASH', cells });
             }
         }
 
         return moves;
     }
 
-    _findAllMaximalPaths(group) {
-        // For small groups, find all maximal paths (paths that can't be extended)
-        // To limit explosion, only return paths that cover the whole group if possible,
-        // otherwise return longest paths from each starting cell
-        const cellSet = new Set(group);
-        const paths = [];
 
-        if (group.length <= 1) {
-            paths.push(group.map(k => { const [r,c] = k.split(',').map(Number); return {row:r,col:c}; }));
-            return paths;
-        }
-
-        // Try to find a Hamiltonian path (covers all cells)
-        const hamiltonians = [];
-        for (const start of group) {
-            const path = this._dfsMaxPath(start, cellSet, group.length);
-            if (path.length === group.length) {
-                hamiltonians.push(path);
-                break; // One is enough
-            }
-        }
-
-        if (hamiltonians.length > 0) {
-            return [hamiltonians[0].map(k => { const [r,c] = k.split(',').map(Number); return {row:r,col:c}; })];
-        }
-
-        // No Hamiltonian — return the longest path from any start
-        let best = [];
-        for (const start of group) {
-            const path = this._dfsMaxPath(start, cellSet, group.length);
-            if (path.length > best.length) best = path;
-        }
-
-        return [best.map(k => { const [r,c] = k.split(',').map(Number); return {row:r,col:c}; })];
-    }
-
-    _dfsMaxPath(start, available, maxLen) {
-        let best = [start];
-        const visited = new Set([start]);
-
-        const dfs = (cur, path) => {
-            if (path.length > best.length) best = [...path];
-            if (path.length === maxLen) return;
-
-            const [cr, cc] = cur.split(',').map(Number);
-            for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
-                const nk = `${cr+dr},${cc+dc}`;
-                if (!available.has(nk) || visited.has(nk)) continue;
-                visited.add(nk);
-                path.push(nk);
-                dfs(nk, path);
-                path.pop();
-                visited.delete(nk);
-            }
-        };
-
-        dfs(start, [start]);
-        return best;
-    }
-
-    _applyMove(grid, move) {
-        // Deep copy grid
-        const newGrid = grid.map(row => row.map(cell => ({
+    _applyMove(state, move) {
+        const newGrid = state.grid.map(row => row.map(cell => ({
             ...cell,
             sheepComponents: [...(cell.sheepComponents || [])],
         })));
+        const newPlanks = state.planks.map(p => ({ ...p }));
 
         if (move.component === 'WASH') {
             for (const { row, col } of move.cells) {
@@ -868,22 +839,19 @@ class PuzzleSolver {
             }
         }
 
-        // Check and clear matched cells
         this._clearMatched(newGrid);
-        // Apply gravity
-        this._applyGravityStatic(newGrid);
-        // Cascade: check again after gravity
+        this._applyGravityDynamic(newGrid, newPlanks);
         let cascaded = true;
         while (cascaded) {
             const cleared = this._clearMatched(newGrid);
             if (cleared > 0) {
-                this._applyGravityStatic(newGrid);
+                this._applyGravityDynamic(newGrid, newPlanks);
             } else {
                 cascaded = false;
             }
         }
 
-        return newGrid;
+        return { grid: newGrid, planks: newPlanks };
     }
 
     _clearMatched(grid) {
@@ -914,18 +882,47 @@ class PuzzleSolver {
         return count;
     }
 
-    _applyGravityStatic(grid) {
+    _applyGravityDynamic(grid, planks) {
         let changed = true;
         while (changed) {
             changed = false;
 
+            for (const plank of planks) {
+                let supported = false;
+                for (let col = plank.startCol; col <= plank.endCol; col++) {
+                    if (plank.row + 1 >= this.rows) { supported = true; break; }
+                    const below = grid[plank.row + 1][col];
+                    if (below && below.alive) { supported = true; break; }
+                    if (planks.some(p => p !== plank && p.row === plank.row + 1 && col >= p.startCol && col <= p.endCol)) {
+                        supported = true; break;
+                    }
+                }
+                if (!supported) {
+                    let canDrop = true;
+                    for (let col = plank.startCol; col <= plank.endCol; col++) {
+                        if (plank.row + 1 >= this.rows) { canDrop = false; break; }
+                    }
+                    if (canDrop) {
+                        for (let col = plank.startCol; col <= plank.endCol; col++) {
+                            const cell = grid[plank.row][col];
+                            if (cell && cell.alive && plank.row + 1 < this.rows && !grid[plank.row + 1][col].alive) {
+                                grid[plank.row + 1][col] = cell;
+                                grid[plank.row][col] = { wallColor: null, sheepComponents: [], alive: false, type: 'normal' };
+                            }
+                        }
+                        plank.row += 1;
+                        changed = true;
+                    }
+                }
+            }
+
             for (let col = 0; col < this.cols; col++) {
                 for (let row = this.rows - 2; row >= 0; row--) {
                     const cell = grid[row][col];
-                    if (!cell.alive) continue;
+                    if (!cell || !cell.alive) continue;
                     if (row + 1 >= this.rows) continue;
                     if (grid[row + 1][col].alive) continue;
-                    if (this.planks.some(p => p.row === row && col >= p.startCol && col <= p.endCol)) continue;
+                    if (planks.some(p => p.row === row && col >= p.startCol && col <= p.endCol)) continue;
 
                     grid[row + 1][col] = cell;
                     grid[row][col] = { wallColor: null, sheepComponents: [], alive: false, type: 'normal' };

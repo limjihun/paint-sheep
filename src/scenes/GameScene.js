@@ -5,13 +5,12 @@ const TOTAL_STAGES = 100;
 const _STAGE_CACHE_MAX = 5;
 const _stageCache = new Map();
 
-async function _loadStage(stageNum) {
-    if (_stageCache.has(stageNum)) return _stageCache.get(stageNum);
-    const base = window.location.pathname.endsWith('/')
-        ? window.location.pathname
-        : window.location.pathname.replace(/\/[^/]*$/, '/');
-    const pack = localStorage.getItem('paintSheep_stagePack') || 'NoMaxStages';
-    const url = `${base}src/data/${pack}/stage${stageNum}.json`;
+async function _loadStage(stageNum, pack) {
+    const cacheKey = `${pack || 'NoMaxStages'}_${stageNum}`;
+    if (_stageCache.has(cacheKey)) return _stageCache.get(cacheKey);
+    const p = pack || 'NoMaxStages';
+    const base = window.__PAINTSHEEP_BASE || '';
+    const url = `${base}data/${p}/stage${stageNum}.json`;
     const res = await fetch(url);
     if (!res.ok) return null;
     const data = await res.json();
@@ -19,7 +18,7 @@ async function _loadStage(stageNum) {
         const oldest = _stageCache.keys().next().value;
         _stageCache.delete(oldest);
     }
-    _stageCache.set(stageNum, data);
+    _stageCache.set(cacheKey, data);
     return data;
 }
 
@@ -65,18 +64,15 @@ export class GameScene extends Phaser.Scene {
     }
 
     preload() {
-        const base = window.location.pathname.endsWith('/')
-            ? window.location.pathname
-            : window.location.pathname.replace(/\/[^/]*$/, '/');
-        const a = base + 'assets/';
-        this.load.setBaseURL('');
-        this.load.setPath('');
+        const a = (window.__PAINTSHEEP_BASE || '') + 'assets/';
         this.load.image('paint', a + 'paint.png');
         this.load.image('tape', a + 'tape.png');
         this.load.image('wolf', a + 'wolf.png');
+        this.load.image('wolf_head', a + 'wolf_head.png');
         this.load.image('sheep', a + 'sheep.png');
         this.load.image('sheepface', a + 'sheepface.png');
         this.load.image('sunglasses', a + 'sunglasses.png');
+        this.load.image('color_book', a + 'color_book.png');
     }
 
     init(data) {
@@ -85,14 +81,28 @@ export class GameScene extends Phaser.Scene {
         this._resumeMode = data.resume || false;
         this._testData = data.testData || null;
         this._testStageNum = data.stageNum || 0;
+        this._megaMode = data.megaMode || false;
+        this._megaStageNum = data.megaStageNum || 0;
     }
 
-    create() {
+    async create() {
+        await document.fonts.ready;
+        this.add.text(-100, -100, 'X', { fontFamily: 'Jua' }).destroy();
         const { width, height } = this.scale;
         this.gameWidth = width;
         this.gameHeight = height;
 
-        if (this._testData) {
+        if (this._megaMode && this._megaStageNum > 0) {
+            _loadStage(this._megaStageNum, 'MegaStages').then(data => {
+                if (data) {
+                    this.puzzle = PuzzleManager.fromWorkerData(data);
+                } else {
+                    this.puzzle = new PuzzleManager(0);
+                }
+                this._initAfterPuzzle();
+            });
+            return;
+        } else if (this._testData) {
             this.puzzle = PuzzleManager.fromWorkerData(this._testData);
         } else if (this._retryPuzzle) {
             this.puzzle = this._retryPuzzle;
@@ -178,19 +188,10 @@ export class GameScene extends Phaser.Scene {
         this.blockViews = [];
         this.isAnimating = false;
         this.itemMode = null;
-        this.isMegaStage = (localStorage.getItem('paintSheep_stagePack') || 'NoMaxStages') === 'MegaStages';
+        this.isMegaStage = this._megaMode;
         this.megaScore = 0;
         this._megaScoreHistory = [];
 
-        if (_getStageNum(this.currentLevel) > 0) {
-            const pack = localStorage.getItem('paintSheep_stagePack') || 'NoMaxStages';
-            const stageNum = _getStageNum(this.currentLevel);
-            const key = `paintSheep_progress_${pack}`;
-            const saved = parseInt(localStorage.getItem(key)) || 0;
-            if (stageNum > saved) {
-                localStorage.setItem(key, stageNum);
-            }
-        }
 
         this._createHeader();
         this._createTutorialMessage();
@@ -198,7 +199,6 @@ export class GameScene extends Phaser.Scene {
         this._createPalette();
         this._createItemSlots();
         this._setupDragInput();
-        this._createDebugUI();
         this._showTutorialStep();
     }
 
@@ -206,30 +206,76 @@ export class GameScene extends Phaser.Scene {
         const { width, height } = this.scale;
         const headerH = height * CONFIG.LAYOUT.HEADER_RATIO;
 
-        const wolfImg = this.add.image(0, headerH / 2, 'wolf');
-        const wolfH = headerH - 10;
+        // Wolf head centered
+        const wolfImg = this.add.image(width / 2, headerH / 2, 'wolf_head');
+        const wolfH = headerH - 8;
         const wolfScale = wolfH / wolfImg.height;
         const wolfW = wolfImg.width * wolfScale;
         wolfImg.setDisplaySize(wolfW, wolfH);
-        wolfImg.setPosition(6 + wolfW / 2, headerH / 2);
 
+        // Stage label above moves box
         const stageNum = _getStageNum(this.currentLevel);
         const stageLabel = stageNum > 0 ? `Stage ${stageNum}` : (this.puzzle.tutorialData ? '튜토리얼' : 'Stage ?');
-        this.add.text(6 + wolfW + 8, headerH / 2 - 12, stageLabel, {
-            fontSize: '13px', color: '#888', fontFamily: 'Jua'
-        }).setOrigin(0, 0.5);
 
-        this.movesText = this.add.text(6 + wolfW + 8, headerH / 2 + 8, `남은 턴: ${this.puzzle.movesLeft}`, {
-            fontSize: '20px', color: '#333', fontFamily: 'Jua', fontStyle: 'bold'
-        }).setOrigin(0, 0.5);
+        // Moves box on left
+        const boxW = 76;
+        const boxH = headerH - 26;
+        const boxX = 8;
+        const boxY = 20;
+        const movesGfx = this.add.graphics();
+        movesGfx.fillStyle(0xfff8e1, 1);
+        movesGfx.fillRoundedRect(boxX, boxY, boxW, boxH, 10);
+        movesGfx.lineStyle(2, 0xe0c080, 1);
+        movesGfx.strokeRoundedRect(boxX, boxY, boxW, boxH, 10);
+
+        this.add.text(boxX + boxW / 2, boxY - 9, stageLabel, {
+            fontSize: '12px', color: '#555', fontFamily: 'Jua', fontStyle: 'bold'
+        }).setOrigin(0.5, 0.5);
+
+        this.add.text(boxX + boxW / 2, boxY + 12, '이동 횟수', {
+            fontSize: '10px', color: '#888', fontFamily: 'Jua'
+        }).setOrigin(0.5, 0.5);
+
+        this.movesText = this.add.text(boxX + boxW / 2, boxY + boxH / 2 + 8, `${this.puzzle.movesLeft}`, {
+            fontSize: '26px', color: '#333', fontFamily: 'Jua', fontStyle: 'bold'
+        }).setOrigin(0.5, 0.5);
 
         if (this.isMegaStage) {
-            this.scoreText = this.add.text(width - 10, headerH / 2 + 8, `점수: ${this.megaScore}`, {
-                fontSize: '20px', color: '#e67e22', fontFamily: 'Jua', fontStyle: 'bold'
-            }).setOrigin(1, 0.5);
+            const scoreBoxX = width - boxW - 8;
+            const scoreGfx = this.add.graphics();
+            scoreGfx.fillStyle(0xfff3e0, 1);
+            scoreGfx.fillRoundedRect(scoreBoxX, boxY, boxW, boxH, 8);
+            scoreGfx.lineStyle(2, 0xe0a050, 1);
+            scoreGfx.strokeRoundedRect(scoreBoxX, boxY, boxW, boxH, 8);
+
+            this.add.text(scoreBoxX + boxW / 2, boxY + 10, '점수', {
+                fontSize: '9px', color: '#888', fontFamily: 'Jua'
+            }).setOrigin(0.5, 0.5);
+
+            this.scoreText = this.add.text(scoreBoxX + boxW / 2, boxY + boxH / 2 + 6, `${this.megaScore}`, {
+                fontSize: '18px', color: '#e67e22', fontFamily: 'Jua', fontStyle: 'bold'
+            }).setOrigin(0.5, 0.5);
+        } else {
+            this._drawHeaderColorChart(width, headerH);
         }
 
         this.headerHeight = headerH;
+    }
+
+    _drawHeaderColorChart(width, headerH) {
+        const size = headerH - 16;
+        const cx = width - size / 2 - 10;
+        const cy = headerH / 2;
+
+        const img = this.add.image(cx, cy, 'color_book');
+        img.setDisplaySize(size, size);
+
+        this.colorChartZone = this.add.zone(cx, cy, size, size)
+            .setInteractive()
+            .on('pointerdown', () => {
+                this._checkTutorialCondition('openColorGuide', {});
+                this.scene.start('ColorGuideScene', { puzzle: this.puzzle, level: this.currentLevel });
+            });
     }
 
     _createTutorialMessage() {
@@ -243,8 +289,9 @@ export class GameScene extends Phaser.Scene {
 
         const { width } = this.scale;
         const msgY = this.headerHeight + 4;
+        const tutFontSize = Math.round(width * 0.038) + 'px';
         this.tutorialText = this.add.text(width / 2, msgY, '', {
-            fontSize: '16px', color: '#d32f2f', fontFamily: 'Jua', fontStyle: 'bold',
+            fontSize: tutFontSize, color: '#d32f2f', fontFamily: 'Jua', fontStyle: 'bold',
             wordWrap: { width: width - 20 }, align: 'center'
         }).setOrigin(0.5, 0).setDepth(999);
 
@@ -256,6 +303,7 @@ export class GameScene extends Phaser.Scene {
         if (this.tutorialStepIndex >= this.tutorialSteps.length) {
             this.tutorialText.setText('');
             this.tutorialHighlightGfx.clear();
+            if (this._tutorialArrowGfx) { this._tutorialArrowGfx.destroy(); this._tutorialArrowGfx = null; }
             this.tutorialSteps = null;
             return;
         }
@@ -268,6 +316,7 @@ export class GameScene extends Phaser.Scene {
     _drawTutorialHighlight(highlight) {
         this.tutorialHighlightGfx.clear();
         this._tutorialHighlightData = highlight || null;
+        if (this._tutorialArrowGfx) { this._tutorialArrowGfx.destroy(); this._tutorialArrowGfx = null; }
         if (!highlight) return;
         this._tutorialPulseTime = 0;
         this._renderTutorialHighlight();
@@ -276,6 +325,7 @@ export class GameScene extends Phaser.Scene {
     _clearTutorialHighlight() {
         if (this.tutorialHighlightGfx) this.tutorialHighlightGfx.clear();
         this._tutorialHighlightData = null;
+        if (this._tutorialArrowGfx) { this._tutorialArrowGfx.destroy(); this._tutorialArrowGfx = null; }
     }
 
     _renderTutorialHighlight() {
@@ -289,6 +339,8 @@ export class GameScene extends Phaser.Scene {
 
         this.tutorialHighlightGfx.lineStyle(3 + s * 2, 0xff4400, 0.9);
 
+        let arrowX = null, arrowY = null, arrowUp = false;
+
         if (highlight.type === 'palette') {
             const pb = this.paletteButtons.find(p => p.colorKey === highlight.color);
             if (pb) {
@@ -296,6 +348,8 @@ export class GameScene extends Phaser.Scene {
                 this.tutorialHighlightGfx.fillStyle(0xff4400, 0.1);
                 this.tutorialHighlightGfx.fillCircle(pb.x, pb.y, r);
                 this.tutorialHighlightGfx.strokeCircle(pb.x, pb.y, r);
+                arrowX = pb.x;
+                arrowY = pb.y - pb.btnSize / 2 - 36;
             }
         } else if (highlight.type === 'cells') {
             const cellSet = new Set(highlight.cells.map(c => `${c[0]},${c[1]}`));
@@ -303,6 +357,7 @@ export class GameScene extends Phaser.Scene {
             const gfx = this.tutorialHighlightGfx;
             const margin = 3;
 
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
             for (const [row, col] of highlight.cells) {
                 const x = this.gridOffsetX + col * step - margin;
                 const y = this.gridOffsetY + row * step - margin;
@@ -321,7 +376,13 @@ export class GameScene extends Phaser.Scene {
                 if (!cellSet.has(`${row},${col + 1}`)) {
                     gfx.lineBetween(x + w, y, x + w, y + h);
                 }
+                if (x < minX) minX = x;
+                if (y < minY) minY = y;
+                if (x + w > maxX) maxX = x + w;
+                if (y + h > maxY) maxY = y + h;
             }
+            arrowX = (minX + maxX) / 2;
+            arrowY = minY - 36;
         } else if (highlight.type === 'item') {
             const ib = this.itemButtons.find(b => b.label === highlight.item);
             if (ib) {
@@ -334,10 +395,12 @@ export class GameScene extends Phaser.Scene {
                     ib.x - ib.btnSize / 2 - 4 - expand, ib.y - ib.btnSize / 2 - 4 - expand,
                     ib.btnSize + 8 + expand * 2, ib.btnSize + 8 + expand * 2, 12
                 );
+                arrowX = ib.x;
+                arrowY = ib.y - ib.btnSize / 2 - 36;
             }
         } else if (highlight.type === 'debug') {
-            if (highlight.button === 'colorGuide' && this.colorGuideBtn) {
-                const b = this.colorGuideBtn.getBounds();
+            if (highlight.button === 'colorGuide' && this.colorChartZone) {
+                const b = this.colorChartZone.getBounds();
                 this.tutorialHighlightGfx.fillStyle(0xff4400, 0.1);
                 this.tutorialHighlightGfx.fillRoundedRect(
                     b.x - 3 - expand, b.y - 3 - expand,
@@ -347,7 +410,95 @@ export class GameScene extends Phaser.Scene {
                     b.x - 3 - expand, b.y - 3 - expand,
                     b.width + 6 + expand * 2, b.height + 6 + expand * 2, 6
                 );
+                arrowX = b.x + b.width / 2;
+                arrowY = b.y + b.height + 36;
+                arrowUp = true;
             }
+        } else if (highlight.type === 'moves') {
+            const bx = 8, by = 20, bw = 76, bh = this.headerHeight - 26;
+            this.tutorialHighlightGfx.fillStyle(0xff4400, 0.1);
+            this.tutorialHighlightGfx.fillRoundedRect(
+                bx - 3 - expand, by - 3 - expand,
+                bw + 6 + expand * 2, bh + 6 + expand * 2, 12
+            );
+            this.tutorialHighlightGfx.strokeRoundedRect(
+                bx - 3 - expand, by - 3 - expand,
+                bw + 6 + expand * 2, bh + 6 + expand * 2, 12
+            );
+            arrowX = bx + bw + 36;
+            arrowY = by + bh / 2;
+            this._arrowDir = 'left';
+        } else if (highlight.type === 'planks') {
+            const step = this.cellSize + this.gridPadding;
+            const gfx = this.tutorialHighlightGfx;
+            const margin = 3;
+            const plankCells = new Set();
+            for (const plank of (this.puzzle.planks || [])) {
+                const startCol = plank.startCol ?? plank.col ?? 0;
+                const endCol = plank.endCol ?? plank.col ?? 0;
+                for (let col = startCol; col <= endCol; col++) {
+                    plankCells.add(`${plank.row},${col}`);
+                }
+            }
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            for (const key of plankCells) {
+                const [row, col] = key.split(',').map(Number);
+                const x = this.gridOffsetX + col * step - margin;
+                const y = this.gridOffsetY + row * step + this.cellSize - margin;
+                const w = this.cellSize + margin * 2;
+                const h = 6 + margin * 2;
+                if (!plankCells.has(`${row},${col - 1}`)) {
+                    gfx.lineBetween(x, y, x, y + h);
+                }
+                if (!plankCells.has(`${row},${col + 1}`)) {
+                    gfx.lineBetween(x + w, y, x + w, y + h);
+                }
+                if (!plankCells.has(`${row - 1},${col}`)) {
+                    gfx.lineBetween(x, y, x + w, y);
+                }
+                if (!plankCells.has(`${row + 1},${col}`)) {
+                    gfx.lineBetween(x, y + h, x + w, y + h);
+                }
+                if (x < minX) minX = x;
+                if (y < minY) minY = y;
+                if (x + w > maxX) maxX = x + w;
+                if (y + h > maxY) maxY = y + h;
+            }
+            arrowX = (minX + maxX) / 2;
+            arrowY = minY - 36;
+        }
+
+        // Arrow pointing toward highlighted area
+        if (arrowX !== null && arrowY !== null) {
+            const bounce = Math.sin((this._tutorialPulseTime || 0) / 300) * 7;
+            if (!this._tutorialArrowGfx) {
+                this._tutorialArrowGfx = this.add.graphics().setDepth(1000);
+            }
+            const ag = this._tutorialArrowGfx;
+            ag.clear();
+            const arrowW = 24;
+            const arrowH = 22;
+            ag.fillStyle(0xffffff, 1);
+            ag.lineStyle(3, 0x1565c0, 1);
+            if (this._arrowDir === 'left') {
+                const ax = arrowX + bounce;
+                const ay = arrowY;
+                ag.fillTriangle(ax - arrowH, ay, ax, ay - arrowW / 2, ax, ay + arrowW / 2);
+                ag.strokeTriangle(ax - arrowH, ay, ax, ay - arrowW / 2, ax, ay + arrowW / 2);
+            } else if (arrowUp) {
+                const ax = arrowX;
+                const ay = arrowY + bounce;
+                ag.fillTriangle(ax, ay - arrowH, ax - arrowW / 2, ay, ax + arrowW / 2, ay);
+                ag.strokeTriangle(ax, ay - arrowH, ax - arrowW / 2, ay, ax + arrowW / 2, ay);
+            } else {
+                const ax = arrowX;
+                const ay = arrowY + bounce;
+                ag.fillTriangle(ax, ay + arrowH, ax - arrowW / 2, ay, ax + arrowW / 2, ay);
+                ag.strokeTriangle(ax, ay + arrowH, ax - arrowW / 2, ay, ax + arrowW / 2, ay);
+            }
+            this._arrowDir = null;
+        } else if (this._tutorialArrowGfx) {
+            this._tutorialArrowGfx.clear();
         }
     }
 
@@ -361,12 +512,12 @@ export class GameScene extends Phaser.Scene {
 
         let met = false;
         if (cond.type === 'selectColor' && eventType === 'selectColor') {
-            met = detail.color === cond.color;
+            met = cond.color === 'ANY' || detail.color === cond.color;
         } else if (cond.type === 'paint' && eventType === 'paint') {
             if (cond.cells) {
                 const required = new Set(cond.cells.map(c => `${c[0]},${c[1]}`));
                 const painted = new Set((detail.cells || []).map(c => `${c.row},${c.col}`));
-                met = required.size <= painted.size && [...required].every(k => painted.has(k));
+                met = [...required].every(k => painted.has(k));
             } else {
                 met = true;
             }
@@ -386,6 +537,8 @@ export class GameScene extends Phaser.Scene {
             met = detail.item === cond.item;
         } else if (cond.type === 'openColorGuide' && eventType === 'openColorGuide') {
             met = true;
+        } else if (cond.type === 'tap' && eventType === 'tap') {
+            met = true;
         }
 
         if (met) {
@@ -401,10 +554,11 @@ export class GameScene extends Phaser.Scene {
 
         const cond = this.tutorialSteps[this.tutorialStepIndex].condition;
         if (!cond) return false;
+        if (cond.type === 'tap') return false;
 
         let allowed = false;
         if (cond.type === 'selectColor' && eventType === 'selectColor') {
-            allowed = detail.color === cond.color;
+            allowed = cond.color === 'ANY' || detail.color === cond.color;
         } else if (cond.type === 'paint') {
             allowed = (eventType === 'paint' || eventType === 'selectColor');
         } else if (cond.type === 'wash') {
@@ -442,7 +596,15 @@ export class GameScene extends Phaser.Scene {
         const totalGridW = cellSize * this.puzzle.cols + padding * (this.puzzle.cols - 1);
         this.gridOffsetX = (width - totalGridW) / 2;
         const totalGridH = cellSize * this.puzzle.rows + padding * (this.puzzle.rows - 1);
-        this.gridOffsetY = gridTop + (gridHeight - totalGridH) / 2;
+        let gridMarginTop = (gridHeight - totalGridH) / 2;
+        if (this.tutorialText) {
+            const tutBottom = this.tutorialText.y + this.tutorialText.height + 4;
+            const gridActualTop = gridTop + gridMarginTop;
+            if (gridActualTop < tutBottom) {
+                gridMarginTop = tutBottom - gridTop;
+            }
+        }
+        this.gridOffsetY = gridTop + gridMarginTop;
 
         this.blockViews = [];
         for (let row = 0; row < this.puzzle.rows; row++) {
@@ -979,6 +1141,9 @@ export class GameScene extends Phaser.Scene {
 
         this.input.on('pointerdown', (pointer) => {
             this._wakeLoop();
+            const wasTapStep = this.tutorialSteps && this.tutorialStepIndex < this.tutorialSteps.length
+                && this.tutorialSteps[this.tutorialStepIndex].condition?.type === 'tap';
+            this._checkTutorialCondition('tap', {});
             if (this.isAnimating) return;
             if (pointer.y > gridBottom) return;
 
@@ -991,7 +1156,13 @@ export class GameScene extends Phaser.Scene {
             if (cell === null) return;
 
             if (!this.selectedColor && !this.isWashMode) {
-                this._showToast('색상을 먼저 선택해주세요');
+                if (!wasTapStep) {
+                    if (this.tutorialSteps && this.tutorialStepIndex < this.tutorialSteps.length) {
+                        this._showToast('튜토리얼을 먼저 완료해주세요');
+                    } else {
+                        this._showToast('색상을 먼저 선택해주세요');
+                    }
+                }
                 return;
             }
 
@@ -1208,7 +1379,7 @@ export class GameScene extends Phaser.Scene {
         } else {
             const result = this.puzzle.paintPath(this.dragPath, this.selectedColor);
             if (result) {
-                if (this._shouldRollbackTutorial('paint', { cells: this.dragPath })) {
+                if (this._shouldRollbackTutorial('paint', { cells: this.dragPath, color: this.selectedColor })) {
                     this.puzzle.undoLastMove();
                     this._rebuildGrid();
                     if (this.isMegaStage) this._megaScoreHistory.pop();
@@ -1217,7 +1388,7 @@ export class GameScene extends Phaser.Scene {
                 }
                 this._clearTutorialHighlight();
                 this._animatePaint(result.painted, result.cleared);
-                this._pendingTutorialCheck = { type: 'paint', detail: { cells: [...this.dragPath] } };
+                this._pendingTutorialCheck = { type: 'paint', detail: { cells: [...this.dragPath], color: this.selectedColor, cleared: result.cleared || [] } };
             } else {
                 if (this.isMegaStage) this._megaScoreHistory.pop();
             }
@@ -1267,11 +1438,30 @@ export class GameScene extends Phaser.Scene {
             const required = new Set(cond.cells.map(c => `${c[0]},${c[1]}`));
             const acted = new Set((detail.cells || []).map(c => `${c.row},${c.col}`));
             if (![...required].every(k => acted.has(k))) return true;
+
+            if (detail.color && eventType === 'paint') {
+                const grid = this.puzzle.grid;
+                const wrongColor = cond.cells.some(([r, c]) => {
+                    const cell = grid[r] && grid[r][c];
+                    if (!cell || !cell.wallColor) return false;
+                    if (cell.type === 'rainbow' || cell.type === 'dirty') return false;
+                    const target = CONFIG.MIXED_COLORS[cell.wallColor];
+                    return target && !target.components.includes(detail.color);
+                });
+                if (wrongColor) return true;
+            }
         }
         return false;
     }
 
     _animatePaint(painted, cleared) {
+        if (this.isMegaStage && painted.length > 0) {
+            const n = painted.filter(p => !p.maskedConsumed && p.needed).length;
+            if (n > 0) {
+                this.megaScore += n * (30 + n);
+                this.scoreText.setText(`${this.megaScore}`);
+            }
+        }
         for (const p of painted) {
             const view = this.blockViews[p.row][p.col];
             const cell = this.puzzle.grid[p.row][p.col];
@@ -1331,11 +1521,6 @@ export class GameScene extends Phaser.Scene {
     }
 
     _animateClear(cleared) {
-        if (this.isMegaStage && cleared.length > 0) {
-            const n = cleared.length;
-            this.megaScore += n * (30 + n);
-            this.scoreText.setText(`점수: ${this.megaScore}`);
-        }
         let completed = 0;
         for (const c of cleared) {
             const view = this.blockViews[c.row][c.col];
@@ -1430,6 +1615,20 @@ export class GameScene extends Phaser.Scene {
         }
 
         // Animate planks
+        if (fallenPlanks.length > 0 && this.plankGfx) {
+            // Redraw static planks excluding ones that are falling
+            const fallenPlankSet = new Set(fallenPlanks.map(fp => `${fp.fromRow},${fp.startCol},${fp.endCol}`));
+            this.plankGfx.clear();
+            if (this.puzzle.planks) {
+                for (const plank of this.puzzle.planks) {
+                    const key = `${plank.row},${plank.startCol},${plank.endCol}`;
+                    if (!fallenPlankSet.has(key)) {
+                        this._drawPlankWithHoles(this.plankGfx, plank);
+                    }
+                }
+            }
+        }
+
         for (const fp of fallenPlanks) {
             const fromY = this.gridOffsetY + fp.fromRow * (this.cellSize + this.gridPadding) + this.cellSize + 1;
             const toY = this.gridOffsetY + fp.toRow * (this.cellSize + this.gridPadding) + this.cellSize + 1;
@@ -1448,9 +1647,6 @@ export class GameScene extends Phaser.Scene {
                 },
             });
         }
-
-        // Hide static plank drawing only when planks are actually moving
-        if (fallenPlanks.length > 0 && this.plankGfx) this.plankGfx.setVisible(false);
     }
 
     _afterGravity() {
@@ -1506,7 +1702,7 @@ export class GameScene extends Phaser.Scene {
     }
 
     _updateMovesText() {
-        this.movesText.setText(`남은 턴: ${this.puzzle.movesLeft}`);
+        this.movesText.setText(`${this.puzzle.movesLeft}`);
     }
 
     _checkEndConditions() {
@@ -1548,6 +1744,7 @@ export class GameScene extends Phaser.Scene {
                     level: this.currentLevel,
                     retryPuzzle: this.puzzle,
                     isMegaStage: this.isMegaStage,
+                    megaStageNum: this._megaStageNum,
                     megaScore: this.megaScore,
                     megaMovesUsed: this.puzzle.initialMovesLeft - this.puzzle.movesLeft,
                     megaMovesLeft: this.puzzle.movesLeft
@@ -1566,6 +1763,7 @@ export class GameScene extends Phaser.Scene {
                 level: this.currentLevel,
                 retryPuzzle: this.puzzle,
                 isMegaStage: true,
+                megaStageNum: this._megaStageNum,
                 megaScore: this.megaScore,
                 megaMovesUsed: movesUsed,
                 megaMovesLeft: 0
@@ -1580,8 +1778,8 @@ export class GameScene extends Phaser.Scene {
             callback: () => {
                 remaining--;
                 this.megaScore += 1000;
-                this.movesText.setText(`남은 턴: ${remaining}`);
-                this.scoreText.setText(`점수: ${this.megaScore}`);
+                this.movesText.setText(`${remaining}`);
+                this.scoreText.setText(`${this.megaScore}`);
             },
             callbackScope: this
         });
@@ -1593,6 +1791,7 @@ export class GameScene extends Phaser.Scene {
                 level: this.currentLevel,
                 retryPuzzle: this.puzzle,
                 isMegaStage: true,
+                megaStageNum: this._megaStageNum,
                 megaScore: this.megaScore,
                 megaMovesUsed: movesUsed,
                 megaMovesLeft: turnsLeft
@@ -1605,16 +1804,19 @@ export class GameScene extends Phaser.Scene {
         const itemTop = height * (1 - CONFIG.LAYOUT.ITEM_RATIO);
         const itemHeight = height * CONFIG.LAYOUT.ITEM_RATIO;
         const btnSize = Math.min(itemHeight - 16, 46);
-        const spacing = width / (CONFIG.ITEM_SLOTS + 1);
+        const totalSlots = CONFIG.ITEM_SLOTS + 1; // +1 for settings
+        const spacing = width / (totalSlots + 1);
 
         this.itemButtons = [];
 
         const items = [
-            { icon: '↩', label: 'undo', bgColor: 0xf8e8c8, borderColor: 0xe0c090, textColor: '#8B6914', image: null },
-            { icon: null, label: 'mask', bgColor: 0xe0f0ff, borderColor: 0x90b8d8, textColor: '#8B6914', image: 'tape' },
-            { icon: '🐕', label: 'herd', bgColor: 0xfff3e0, borderColor: 0xd4a060, textColor: '#5D4037', image: null },
-            { icon: null, label: 'singlePaint', bgColor: 0xe8f0e8, borderColor: 0x90c090, textColor: '#2d6b2d', image: 'paint' },
+            { icon: '↩', label: 'undo', bgColor: 0xf8e8c8, borderColor: 0xe0c090, textColor: '#8B6914', image: null, limited: false },
+            { icon: null, label: 'mask', bgColor: 0xe0f0ff, borderColor: 0x90b8d8, textColor: '#8B6914', image: 'tape', limited: true },
+            { icon: '🐕', label: 'herd', bgColor: 0xfff3e0, borderColor: 0xd4a060, textColor: '#5D4037', image: null, limited: true },
+            { icon: null, label: 'singlePaint', bgColor: 0xe8f0e8, borderColor: 0x90c090, textColor: '#2d6b2d', image: 'paint', limited: true },
         ];
+
+        this._itemUses = { mask: 1, herd: 1, singlePaint: 1 };
 
         for (let i = 0; i < CONFIG.ITEM_SLOTS; i++) {
             const x = spacing * (i + 1);
@@ -1636,12 +1838,47 @@ export class GameScene extends Phaser.Scene {
                 }).setOrigin(0.5);
             }
 
+            let badge = null;
+            if (item.limited) {
+                const badgeR = 8;
+                const bx = x + btnSize / 2 - badgeR + 2;
+                const by = y - btnSize / 2 + badgeR - 2;
+                badge = this.add.graphics();
+                badge.fillStyle(0xff5722, 1);
+                badge.fillCircle(bx, by, badgeR);
+                badge.lineStyle(1.5, 0xffffff, 1);
+                badge.strokeCircle(bx, by, badgeR);
+                const badgeText = this.add.text(bx, by, '1', {
+                    fontSize: '11px', color: '#fff', fontFamily: 'Jua', fontStyle: 'bold'
+                }).setOrigin(0.5);
+                badge._badgeText = badgeText;
+                badge._bx = bx;
+                badge._by = by;
+                badge._badgeR = badgeR;
+            }
+
+            const disabledOverlay = this.add.graphics();
+            disabledOverlay.setVisible(false);
+
             const zone = this.add.zone(x, y, btnSize, btnSize)
                 .setInteractive()
                 .on('pointerdown', () => this._onItemPress(item.label));
 
-            this.itemButtons.push({ btn, zone, x, y, btnSize, label: item.label });
+            this.itemButtons.push({ btn, zone, x, y, btnSize, label: item.label, badge, disabledOverlay, limited: item.limited });
         }
+
+        // Settings button (rightmost)
+        const settingsX = spacing * (CONFIG.ITEM_SLOTS + 1);
+        const settingsY = itemTop + itemHeight / 2;
+        const settingsBtn = this.add.graphics();
+        settingsBtn.fillStyle(0xe0e0e0, 1);
+        settingsBtn.fillRoundedRect(settingsX - btnSize / 2, settingsY - btnSize / 2, btnSize, btnSize, 10);
+        settingsBtn.lineStyle(2, 0xbdbdbd, 1);
+        settingsBtn.strokeRoundedRect(settingsX - btnSize / 2, settingsY - btnSize / 2, btnSize, btnSize, 10);
+        this.add.text(settingsX, settingsY, '⚙️', { fontSize: '22px' }).setOrigin(0.5);
+        this.add.zone(settingsX, settingsY, btnSize, btnSize)
+            .setInteractive()
+            .on('pointerdown', () => this._showInGameSettings());
 
         this.itemIndicator = this.add.graphics();
     }
@@ -1655,6 +1892,8 @@ export class GameScene extends Phaser.Scene {
             this._undoLastMove();
             return;
         }
+
+        if (this._itemUses[label] !== undefined && this._itemUses[label] <= 0) return;
 
         if (label === 'herd') {
             if (this._isTutorialBlocked('selectItem', { item: 'herd' })) return;
@@ -1726,6 +1965,8 @@ export class GameScene extends Phaser.Scene {
         if (this.itemMode === 'singlePaint') {
             const result = this.puzzle.paintSingleCell(cell.row, cell.col);
             if (result) {
+                this._itemUses.singlePaint--;
+                this._updateItemBadges();
                 this._checkTutorialCondition('useItem', { item: 'singlePaint' });
                 this.isAnimating = true;
                 const view = this.blockViews[cell.row][cell.col];
@@ -1761,9 +2002,10 @@ export class GameScene extends Phaser.Scene {
             this._updateItemSelection();
 
         } else if (this.itemMode === 'mask') {
-            const targetCell = this.puzzle.grid[cell.row][cell.col];
             const success = this.puzzle.applyMask(cell.row, cell.col);
             if (success) {
+                this._itemUses.mask--;
+                this._updateItemBadges();
                 this._checkTutorialCondition('useItem', { item: 'mask' });
                 this._rebuildGrid();
             }
@@ -1825,6 +2067,8 @@ export class GameScene extends Phaser.Scene {
     _executeHerd(direction) {
         this._destroyHerdUI();
         this.puzzle.herdSheep(direction);
+        this._itemUses.herd--;
+        this._updateItemBadges();
         this._rebuildGrid();
         this._updateNeedHighlight();
         this._checkTutorialCondition('useItem', { item: 'herd' });
@@ -1852,7 +2096,8 @@ export class GameScene extends Phaser.Scene {
     }
 
     _showToast(message) {
-        if (this._toastText) this._toastText.destroy();
+        if (this._toastTween) { this._toastTween.remove(); this._toastTween = null; }
+        if (this._toastText) { this._toastText.destroy(); this._toastText = null; }
 
         const { width } = this.scale;
         this._toastText = this.add.text(width / 2, this.gridTop + this.gridHeight / 2, message, {
@@ -1860,70 +2105,149 @@ export class GameScene extends Phaser.Scene {
             backgroundColor: 'rgba(0,0,0,0.7)', padding: { x: 12, y: 8 }
         }).setOrigin(0.5).setDepth(1000);
 
-        this.tweens.add({
+        this._toastTween = this.tweens.add({
             targets: this._toastText,
             alpha: 0,
             delay: 1000,
             duration: 500,
-            onComplete: () => { if (this._toastText) this._toastText.destroy(); this._toastText = null; }
+            onComplete: () => { if (this._toastText) this._toastText.destroy(); this._toastText = null; this._toastTween = null; }
         });
     }
 
-    _createDebugUI() {
-        const { width } = this.scale;
-        this.add.text(width - 10, 10, '>>>', {
-            fontSize: '14px', color: '#fff', backgroundColor: '#666',
-            padding: { x: 6, y: 4 }
-        }).setOrigin(1, 0).setInteractive()
-          .on('pointerdown', () => this.scene.start('GameScene', { level: this.currentLevel + 1 }));
 
-        this.add.text(width - 50, 10, '📖', {
-            fontSize: '14px', color: '#fff', backgroundColor: '#8E24AA',
-            padding: { x: 6, y: 4 }
-        }).setOrigin(1, 0).setInteractive()
-          .on('pointerdown', () => this.scene.start('SolutionScene', { puzzle: this.puzzle, level: this.currentLevel }));
+    _showInGameSettings() {
+        if (this._settingsPanel) return;
+        this._wakeLoop();
 
-        this.add.text(width - 90, 10, '🔄', {
-            fontSize: '14px', color: '#fff', backgroundColor: '#e74c3c',
-            padding: { x: 6, y: 4 }
-        }).setOrigin(1, 0).setInteractive()
-          .on('pointerdown', () => {
-              this.puzzle.reset();
-              this.scene.start('GameScene', { level: this.currentLevel, retryPuzzle: this.puzzle });
-          });
+        const { width, height } = this.scale;
+        const panelW = width * 0.8;
+        const panelH = 280;
+        const panelX = (width - panelW) / 2;
+        const panelY = (height - panelH) / 2;
 
-        this.colorGuideBtn = this.add.text(width - 130, 10, '🎨', {
-            fontSize: '14px', color: '#fff', backgroundColor: '#2E7D32',
-            padding: { x: 6, y: 4 }
-        }).setOrigin(1, 0).setInteractive()
-          .on('pointerdown', () => {
-              this._checkTutorialCondition('openColorGuide', {});
-              this.scene.start('ColorGuideScene', { puzzle: this.puzzle, level: this.currentLevel });
-          });
+        this._settingsPanel = this.add.container(0, 0).setDepth(3000);
 
-        this.add.text(width - 170, 10, '🗺', {
-            fontSize: '14px', color: '#fff', backgroundColor: '#FF6F00',
-            padding: { x: 6, y: 4 }
-        }).setOrigin(1, 0).setInteractive()
-          .on('pointerdown', () => this.scene.start('MapEditorScene', { puzzle: this.puzzle, level: this.currentLevel, rows: this.puzzle.rows, cols: this.puzzle.cols, stageNum: _getStageNum(this.currentLevel) }));
+        const dim = this.add.graphics();
+        dim.fillStyle(0x000000, 0.5);
+        dim.fillRect(-10, -10, width + 20, height + 20);
+        dim.setInteractive(new Phaser.Geom.Rectangle(-10, -10, width + 20, height + 20), Phaser.Geom.Rectangle.Contains);
+        this._settingsPanel.add(dim);
+
+        const panel = this.add.graphics();
+        panel.fillStyle(0xffffff, 0.97);
+        panel.fillRoundedRect(panelX, panelY, panelW, panelH, 16);
+        this._settingsPanel.add(panel);
+
+        const titleText = this.add.text(width / 2, panelY + 30, '일시정지', {
+            fontSize: '22px', color: '#333', fontFamily: 'Jua', fontStyle: 'bold'
+        }).setOrigin(0.5);
+        this._settingsPanel.add(titleText);
+
+        const btnW = panelW * 0.7;
+        const btnH = 42;
+        const btnGap = 12;
+        let btnY = panelY + 70;
+
+        // Resume
+        const resumeGfx = this.add.graphics();
+        resumeGfx.fillStyle(0x4CAF50, 1);
+        resumeGfx.fillRoundedRect(width / 2 - btnW / 2, btnY, btnW, btnH, 10);
+        this._settingsPanel.add(resumeGfx);
+        const resumeText = this.add.text(width / 2, btnY + btnH / 2, '계속하기', {
+            fontSize: '16px', color: '#fff', fontFamily: 'Jua', fontStyle: 'bold'
+        }).setOrigin(0.5);
+        this._settingsPanel.add(resumeText);
+        const resumeZone = this.add.zone(width / 2, btnY + btnH / 2, btnW, btnH).setInteractive();
+        resumeZone.on('pointerdown', () => { this._settingsPanel.destroy(true); this._settingsPanel = null; });
+        this._settingsPanel.add(resumeZone);
+
+        btnY += btnH + btnGap;
+
+        // Retry
+        const retryGfx = this.add.graphics();
+        retryGfx.fillStyle(0x3498db, 1);
+        retryGfx.fillRoundedRect(width / 2 - btnW / 2, btnY, btnW, btnH, 10);
+        this._settingsPanel.add(retryGfx);
+        const retryText = this.add.text(width / 2, btnY + btnH / 2, '다시하기', {
+            fontSize: '16px', color: '#fff', fontFamily: 'Jua', fontStyle: 'bold'
+        }).setOrigin(0.5);
+        this._settingsPanel.add(retryText);
+        const retryZone = this.add.zone(width / 2, btnY + btnH / 2, btnW, btnH).setInteractive();
+        retryZone.on('pointerdown', () => {
+            this._settingsPanel.destroy(true);
+            this._settingsPanel = null;
+            this.scene.start('GameScene', { level: this.currentLevel });
+        });
+        this._settingsPanel.add(retryZone);
+
+        btnY += btnH + btnGap;
+
+        // Home
+        const homeGfx = this.add.graphics();
+        homeGfx.fillStyle(0x8e44ad, 1);
+        homeGfx.fillRoundedRect(width / 2 - btnW / 2, btnY, btnW, btnH, 10);
+        this._settingsPanel.add(homeGfx);
+        const homeText = this.add.text(width / 2, btnY + btnH / 2, '메인으로', {
+            fontSize: '16px', color: '#fff', fontFamily: 'Jua', fontStyle: 'bold'
+        }).setOrigin(0.5);
+        this._settingsPanel.add(homeText);
+        const homeZone = this.add.zone(width / 2, btnY + btnH / 2, btnW, btnH).setInteractive();
+        homeZone.on('pointerdown', () => {
+            this._settingsPanel.destroy(true);
+            this._settingsPanel = null;
+            this.scene.start('MainScene');
+        });
+        this._settingsPanel.add(homeZone);
     }
-
-
 
     _undoLastMove() {
         if (this.isAnimating) return;
         const result = this.puzzle.undoLastMove();
         if (!result) return;
 
+        if (result.itemType && this._itemUses[result.itemType] !== undefined) {
+            this._itemUses[result.itemType]++;
+            this._updateItemBadges();
+        }
+
         if (this.isMegaStage && this._megaScoreHistory && this._megaScoreHistory.length > 0) {
             this.megaScore = this._megaScoreHistory.pop();
-            this.scoreText.setText(`점수: ${this.megaScore}`);
+            this.scoreText.setText(`${this.megaScore}`);
         }
 
         this._rebuildGrid();
         this._updateMovesText();
         this._updateNeedHighlight();
         this._checkTutorialCondition('useItem', { item: 'undo' });
+    }
+
+    _updateItemBadges() {
+        for (const ib of this.itemButtons) {
+            if (!ib.limited) continue;
+            const uses = this._itemUses[ib.label] || 0;
+            if (ib.badge) {
+                ib.badge.clear();
+                if (uses > 0) {
+                    ib.badge.fillStyle(0xff5722, 1);
+                    ib.badge.fillCircle(ib.badge._bx, ib.badge._by, ib.badge._badgeR);
+                    ib.badge.lineStyle(1.5, 0xffffff, 1);
+                    ib.badge.strokeCircle(ib.badge._bx, ib.badge._by, ib.badge._badgeR);
+                    ib.badge._badgeText.setText(`${uses}`);
+                    ib.badge._badgeText.setVisible(true);
+                } else {
+                    ib.badge._badgeText.setVisible(false);
+                }
+            }
+            if (uses <= 0) {
+                ib.disabledOverlay.clear();
+                ib.disabledOverlay.fillStyle(0xffffff, 0.6);
+                ib.disabledOverlay.fillRoundedRect(ib.x - ib.btnSize / 2, ib.y - ib.btnSize / 2, ib.btnSize, ib.btnSize, 10);
+                ib.disabledOverlay.setVisible(true);
+            } else {
+                ib.disabledOverlay.clear();
+                ib.disabledOverlay.setVisible(false);
+            }
+        }
     }
 
     _wakeLoop() {

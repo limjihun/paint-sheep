@@ -1,4 +1,5 @@
 import { CONFIG } from '../config.js';
+import { loadProgress, saveProgress, resetScore } from '../storage.js';
 
 export class MainScene extends Phaser.Scene {
     constructor() {
@@ -6,27 +7,36 @@ export class MainScene extends Phaser.Scene {
     }
 
     preload() {
-        const base = window.location.pathname.endsWith('/')
-            ? window.location.pathname
-            : window.location.pathname.replace(/\/[^/]*$/, '/');
-        const a = base + 'assets/';
-        this.load.setBaseURL('');
-        this.load.setPath('');
+        const a = (window.__PAINTSHEEP_BASE || '') + 'assets/';
         this.load.image('title', a + 'title.png');
         this.load.image('wolf', a + 'wolf.png');
         this.load.image('sheep', a + 'sheep.png');
+        this.load.image('sunglasses', a + 'sunglasses.png');
     }
 
     async create() {
         await document.fonts.ready;
+        this.add.text(-100, -100, 'X', { fontFamily: 'Jua' }).destroy();
         const { width, height } = this.scale;
 
+        // Background
         this.add.graphics()
             .fillStyle(0xf5e6d3, 1)
             .fillRect(-2, -2, width + 4, height + 4);
 
-        // Title image
-        const titleY = height * 0.12;
+        const tabH = 60;
+        const headerH = 50;
+
+        // --- Top header (profile, coins, hearts, settings) ---
+        this._createHeader(width, headerH);
+
+        // --- Center area (title + sheep/wolf + start button) ---
+        const centerTop = headerH + 10;
+        const centerBottom = height - tabH - 10;
+        const centerH = centerBottom - centerTop;
+
+        // Title
+        const titleY = centerTop + centerH * 0.08;
         const titleSrc = this.textures.get('title').getSourceImage();
         const titleMaxW = width * 1.0;
         const titleScale = titleMaxW / titleSrc.width;
@@ -34,35 +44,95 @@ export class MainScene extends Phaser.Scene {
         const titleH = titleSrc.height * titleScale;
         this.add.image(width / 2, titleY, 'title').setDisplaySize(titleW, titleH);
 
-        this.add.text(width / 2, titleY + titleH / 2 + 6, '양들을 칠해 늑대가 볼 수 없게하세요!', {
-            fontSize: '14px', color: '#333', fontFamily: 'Jua', fontStyle: 'bold'
+        // Sheep + Wolf display area
+        const displayCenterY = centerTop + centerH * 0.50;
+        this._createSheepDisplay(width, displayCenterY);
+
+        // --- Bottom tab bar (show immediately) ---
+        this._createTabBar(width, height, tabH);
+
+        // Start button area - show loading text first
+        const btnY = centerTop + centerH * 0.92;
+        const btnW = width * 0.55;
+        const btnH = 52;
+
+        const loadingText = this.add.text(width / 2, btnY, '불러오는 중...', {
+            fontSize: '18px', color: '#888', fontFamily: 'Jua'
         }).setOrigin(0.5);
 
-        // Buttons positioned from bottom
-        const btnW = width * 0.6;
-        const btnH = 44;
-        const btnGap = 14;
-        const btnBottomMargin = 15;
-        const btnStartY = height - btnBottomMargin - (btnH * 3 + btnGap * 2);
+        // Load progress then show button
+        loadProgress().then(progress => {
+            const savedStage = progress?.stage || 1;
+            loadingText.destroy();
 
-        // Sheep blocks around wolf — centered between subtitle and buttons
-        const subtitleBottom = titleY + titleH / 2 + 24;
-        const centerY = subtitleBottom + (btnStartY - subtitleBottom) / 2;
-        const sheepSrc = this.textures.get('sheep').getSourceImage();
-        const sheepH = height * 0.07;
-        const sheepScale = sheepH / sheepSrc.height;
-        const sheepW = sheepSrc.width * sheepScale;
-        const blockSize = Math.max(sheepW, sheepH) + 10;
+            const btnGfx = this.add.graphics();
+            btnGfx.fillStyle(0x4CAF50, 1);
+            btnGfx.fillRoundedRect(width / 2 - btnW / 2, btnY - btnH / 2, btnW, btnH, 26);
+            btnGfx.lineStyle(3, 0x388E3C, 1);
+            btnGfx.strokeRoundedRect(width / 2 - btnW / 2, btnY - btnH / 2, btnW, btnH, 26);
+
+            this.add.text(width / 2, btnY, `Level ${savedStage}`, {
+                fontSize: '24px', color: '#fff', fontFamily: 'Jua', fontStyle: 'bold'
+            }).setOrigin(0.5);
+
+            this.add.zone(width / 2, btnY, btnW, btnH)
+                .setInteractive()
+                .on('pointerdown', () => {
+                    const level = savedStage + CONFIG.TUTORIAL_COUNT - 1;
+                    this.scene.start('GameScene', { level });
+                });
+        });
+    }
+
+    _createHeader(width, headerH) {
+        const headerBg = this.add.graphics();
+        headerBg.fillStyle(0xf5e6d3, 1);
+        headerBg.fillRect(0, 0, width, headerH);
+
+        // Profile icon (dummy)
+        const profSize = 36;
+        const profX = 12 + profSize / 2;
+        const profY = headerH / 2;
+        const profGfx = this.add.graphics();
+        profGfx.fillStyle(0xff8a65, 1);
+        profGfx.fillRoundedRect(profX - profSize / 2, profY - profSize / 2, profSize, profSize, 8);
+        this.add.text(profX, profY, '🐑', { fontSize: '20px' }).setOrigin(0.5);
+
+        // Coins (dummy)
+        const coinX = profX + profSize / 2 + 16;
+        this.add.graphics().fillStyle(0xFFC107, 1).fillCircle(coinX, profY, 10);
+        this.add.text(coinX + 14, profY, '1,000', {
+            fontSize: '12px', color: '#333', fontFamily: 'Jua', fontStyle: 'bold'
+        }).setOrigin(0, 0.5);
+
+        // Hearts (dummy)
+        const heartX = coinX + 80;
+        this.add.text(heartX, profY, '❤️ 5', {
+            fontSize: '13px', color: '#e91e63', fontFamily: 'Jua', fontStyle: 'bold'
+        }).setOrigin(0, 0.5);
+
+        // Settings gear
+        const gearX = width - 30;
+        this.add.text(gearX, profY, '⚙️', {
+            fontSize: '22px'
+        }).setOrigin(0.5).setInteractive()
+          .on('pointerdown', () => this._showSettings());
+    }
+
+    _createSheepDisplay(width, centerY) {
+        this._displayWidth = width;
+        this._displayCenterY = centerY;
+        this._sheepBlocks = [];
 
         const blockDefs = [
-            { colors: [0xE53935], mixed: 0xE53935 },
-            { colors: [0xFFD600], mixed: 0xFFD600 },
-            { colors: [0x2979FF], mixed: 0x2979FF },
-            { colors: [0xE53935, 0xFFD600], mixed: 0xFF9100 },
-            { colors: [0xE53935, 0x2979FF], mixed: 0x6A1B9A },
-            { colors: [0xFFD600, 0x2979FF], mixed: 0x00C853 },
-            { colors: 'rainbow', mixed: null },
-            { colors: [0xE53935, 0xFFD600, 0x2979FF], mixed: 0x212121 },
+            { colors: [0xE53935], mixed: 0xE53935, components: 1 },
+            { colors: [0xFFD600], mixed: 0xFFD600, components: 1 },
+            { colors: [0x2979FF], mixed: 0x2979FF, components: 1 },
+            { colors: [0xE53935, 0xFFD600], mixed: 0xFF9100, components: 2 },
+            { colors: [0xE53935, 0x2979FF], mixed: 0x6A1B9A, components: 2 },
+            { colors: [0xFFD600, 0x2979FF], mixed: 0x00C853, components: 2 },
+            { colors: 'rainbow', mixed: null, components: 1 },
+            { colors: [0xE53935, 0xFFD600, 0x2979FF], mixed: 0x212121, components: 3 },
         ];
         const positions = [
             { x: -1.3, y: -1.2 }, { x: 0, y: -1.4 }, { x: 1.3, y: -1.2 },
@@ -70,125 +140,196 @@ export class MainScene extends Phaser.Scene {
             { x: -1.3, y: 1.2 }, { x: 0, y: 1.4 }, { x: 1.3, y: 1.2 },
         ];
 
-        const colorMode = localStorage.getItem('paintSheep_colorMode') || 'mixed';
+        this._blockDefs = blockDefs;
+        this._positions = positions;
+        this._spawnAllSheep();
 
-        for (let i = 0; i < positions.length; i++) {
-            const px = width / 2 + positions[i].x * blockSize * 1.1;
-            const py = centerY + positions[i].y * blockSize * 1.0;
-            const { colors: colorArr, mixed } = blockDefs[i];
-
-            const bg = this.add.graphics();
-            const half = blockSize / 2;
-
-            if (colorArr === 'rainbow') {
-                const rainbowColors = [0x00BCD4, 0xE91E63, 0xFFEB3B, 0x2979FF, 0x00C853, 0xE53935];
-                const stripeH = blockSize / rainbowColors.length;
-                for (let s = 0; s < rainbowColors.length; s++) {
-                    bg.fillStyle(rainbowColors[s], 1);
-                    bg.fillRect(px - half, py - half + s * stripeH, blockSize, stripeH);
-                }
-            } else if (colorArr.length === 1 || colorMode === 'mixed') {
-                const c = colorArr.length === 1 ? colorArr[0] : mixed;
-                bg.fillStyle(c, 1);
-                bg.fillRoundedRect(px - half, py - half, blockSize, blockSize, 8);
-            } else if (colorArr.length === 2) {
-                bg.fillStyle(colorArr[0], 1);
-                bg.fillRoundedRect(px - half, py - half, blockSize, blockSize, 8);
-                bg.fillStyle(colorArr[0], 1);
-                bg.fillTriangle(px - half, py - half, px + half, py - half, px - half, py + half);
-                bg.fillStyle(colorArr[1], 1);
-                bg.fillTriangle(px + half, py - half, px + half, py + half, px - half, py + half);
-            } else {
-                const t = half * 0.45;
-                bg.fillStyle(colorArr[0], 1);
-                bg.fillRoundedRect(px - half, py - half, blockSize, blockSize, 8);
-                bg.fillStyle(colorArr[0], 1);
-                bg.beginPath();
-                bg.moveTo(px - half, py - half);
-                bg.lineTo(px + t, py - half);
-                bg.lineTo(px - half, py + t);
-                bg.closePath();
-                bg.fillPath();
-                bg.fillStyle(colorArr[1], 1);
-                bg.beginPath();
-                bg.moveTo(px + t, py - half);
-                bg.lineTo(px + half, py - half);
-                bg.lineTo(px + half, py - t);
-                bg.lineTo(px - t, py + half);
-                bg.lineTo(px - half, py + half);
-                bg.lineTo(px - half, py + t);
-                bg.closePath();
-                bg.fillPath();
-                bg.fillStyle(colorArr[2], 1);
-                bg.beginPath();
-                bg.moveTo(px + half, py - t);
-                bg.lineTo(px + half, py + half);
-                bg.lineTo(px - t, py + half);
-                bg.closePath();
-                bg.fillPath();
-            }
-
-            // Mask for rounded corners
-            const mask = this.make.graphics();
-            mask.fillStyle(0xffffff);
-            mask.fillRoundedRect(px - half, py - half, blockSize, blockSize, 8);
-            bg.setMask(mask.createGeometryMask());
-
-            // Bottom row sheep (indices 5,6,7) appear in front of wolf
-            const depth = i >= 5 ? 20 : 0;
-            bg.setDepth(depth);
-
-            const sheep = this.add.image(px, py, 'sheep').setDisplaySize(sheepW, sheepH).setDepth(depth);
-
-            // Gentle floating animation
-            this.tweens.add({
-                targets: [bg, sheep],
-                y: `+=${3 + Math.random() * 3}`,
-                duration: 1200 + Math.random() * 600,
-                yoyo: true,
-                repeat: -1,
-                ease: 'Sine.easeInOut',
-                delay: Math.random() * 800,
-            });
-        }
-
-        // Wolf in center (on top of sheep)
+        // Wolf in center
         const wolfSrc = this.textures.get('wolf').getSourceImage();
-        const wolfH = height * 0.18;
+        const wolfH = width * 0.3;
         const wolfScale = wolfH / wolfSrc.height;
         const wolfW = wolfSrc.width * wolfScale;
         this.add.image(width / 2, centerY, 'wolf').setDisplaySize(wolfW, wolfH).setDepth(10);
 
-        // Buttons
+        // Start paint cycle
+        this._paintTimer = this.time.addEvent({
+            delay: 2000,
+            callback: () => this._paintRandomSheep(),
+            loop: true
+        });
+    }
 
-        // Tutorial button
-        this._createButton(width / 2, btnStartY, btnW, btnH, '튜토리얼', 0x27ae60, () => {
-            this.scene.start('GameScene', { level: 0 });
+    _spawnAllSheep() {
+        const width = this._displayWidth;
+        const centerY = this._displayCenterY;
+        const sheepSrc = this.textures.get('sheep').getSourceImage();
+        const blockSize = width * 0.144;
+        const sheepH = blockSize * 0.75;
+        const sheepScale = sheepH / sheepSrc.height;
+        const sheepW = sheepSrc.width * sheepScale;
+        const maxPosX = 1.6;
+        const spreadX = (width * 0.9 / 2 - blockSize / 2) / (maxPosX * blockSize);
+        const half = blockSize / 2;
+
+        for (let i = 0; i < this._positions.length; i++) {
+            const px = width / 2 + this._positions[i].x * blockSize * spreadX;
+            const py = centerY + this._positions[i].y * blockSize * spreadX;
+            const def = this._blockDefs[i];
+            const colorArr = def.colors;
+
+            const container = this.add.container(px, py);
+            const depth = i >= 5 ? 20 : 0;
+            container.setDepth(depth);
+
+            const bg = this.make.graphics({}, false);
+            if (colorArr === 'rainbow') {
+                const r = 8;
+                const rainbowColors = [0x00BCD4, 0xE91E63, 0xFFEB3B, 0x2979FF, 0x00C853, 0xE53935];
+                const stripeH = blockSize / rainbowColors.length;
+                for (let s = 0; s < rainbowColors.length; s++) {
+                    bg.fillStyle(rainbowColors[s], 1);
+                    if (s === 0) {
+                        bg.fillRoundedRect(-half, -half, blockSize, stripeH + r, { tl: r, tr: r, bl: 0, br: 0 });
+                    } else if (s === rainbowColors.length - 1) {
+                        bg.fillRoundedRect(-half, -half + s * stripeH - r, blockSize, stripeH + r, { tl: 0, tr: 0, bl: r, br: r });
+                    } else {
+                        bg.fillRect(-half, -half + s * stripeH, blockSize, stripeH);
+                    }
+                }
+            } else {
+                bg.fillStyle(def.mixed, 1);
+                bg.fillRoundedRect(-half, -half, blockSize, blockSize, 8);
+            }
+
+            const sheep = this.make.image({ key: 'sheep', x: 0, y: 0 }, false);
+            sheep.setDisplaySize(sheepW, sheepH).setOrigin(0.5);
+
+            container.add([bg, sheep]);
+
+            this.tweens.add({
+                targets: container,
+                y: `+=${3 + Math.random() * 3}`,
+                duration: 1200 + Math.random() * 600,
+                yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+                delay: Math.random() * 800,
+            });
+
+            this._sheepBlocks.push({
+                container, bg, sheep, px, py, half, blockSize,
+                painted: 0, alive: true, def, depth, sheepW, sheepH
+            });
+        }
+    }
+
+    _paintRandomSheep() {
+        const alive = this._sheepBlocks.filter(b => b.alive);
+        if (alive.length === 0) {
+            this.time.delayedCall(800, () => {
+                this._spawnAllSheep();
+            });
+            return;
+        }
+
+        const target = alive[Math.floor(Math.random() * alive.length)];
+        target.painted++;
+
+        const colorArr = target.def.colors;
+        if (colorArr === 'rainbow') {
+            const c = [0xE53935, 0xFFD600, 0x2979FF][Math.floor(Math.random() * 3)];
+            target.sheep.setTint(c);
+        } else {
+            const R = 0xE53935, Y = 0xFFD600, B = 0x2979FF;
+            const mixMap = new Map([
+                [JSON.stringify([R]), R],
+                [JSON.stringify([Y]), Y],
+                [JSON.stringify([B]), B],
+                [JSON.stringify([R, Y].sort()), 0xFF9100],
+                [JSON.stringify([R, B].sort()), 0x6A1B9A],
+                [JSON.stringify([Y, B].sort()), 0x00C853],
+                [JSON.stringify([R, Y, B].sort()), 0x212121],
+            ]);
+            const applied = colorArr.slice(0, target.painted).sort();
+            const mixed = mixMap.get(JSON.stringify(applied));
+            if (mixed !== undefined) {
+                target.sheep.setTint(mixed);
+            }
+        }
+
+        // Paint bounce (same as in-game: container scale)
+        this.tweens.add({
+            targets: target.container,
+            scaleX: 1.1, scaleY: 1.1,
+            duration: 100, yoyo: true
         });
 
-        // New game button
-        this._createButton(width / 2, btnStartY + btnH + btnGap, btnW, btnH, '새로하기', 0x3498db, () => {
-            this.scene.start('GameScene', { level: CONFIG.TUTORIAL_COUNT });
-        });
+        // Check if fully painted → clear
+        const neededPaints = colorArr === 'rainbow' ? 1 : colorArr.length;
+        if (target.painted >= neededPaints) {
+            target.alive = false;
 
-        // Continue button
-        const pack = localStorage.getItem('paintSheep_stagePack') || 'NoMaxStages';
-        const progressKey = `paintSheep_progress_${pack}`;
-        const savedStage = parseInt(localStorage.getItem(progressKey)) || 0;
-        const hasSave = savedStage > 0;
-        const continueAlpha = hasSave ? 1 : 0.4;
-        this._createButton(width / 2, btnStartY + (btnH + btnGap) * 2, btnW, btnH,
-            hasSave ? `이어하기 (Stage ${savedStage})` : '이어하기', 0x8e44ad, () => {
-            if (!hasSave) return;
-            const level = savedStage + CONFIG.TUTORIAL_COUNT - 1;
-            this.scene.start('GameScene', { level });
-        }, continueAlpha, !hasSave);
+            // Add sunglasses before clear
+            const sg = this.make.image({ key: 'sunglasses', x: 0, y: 0 }, false);
+            sg.setDisplaySize(target.sheepW, target.sheepH).setOrigin(0.5);
+            target.container.add(sg);
 
-        // Settings button (gear icon top-right)
-        this.add.text(width - 40, 30, '⚙️', {
-            fontSize: '24px'
-        }).setOrigin(0.5).setInteractive()
-          .on('pointerdown', () => this._showSettings());
+            // Clear animation (same as in-game: scale 0 + alpha 0)
+            this.time.delayedCall(200, () => {
+                this.tweens.add({
+                    targets: target.container,
+                    scaleX: 0, scaleY: 0, alpha: 0,
+                    duration: 300,
+                    ease: 'Back.easeIn',
+                    onComplete: () => {
+                        target.container.destroy();
+                    }
+                });
+            });
+        }
+    }
+
+    _createTabBar(width, height, tabH) {
+        const tabY = height - tabH;
+
+        const tabBg = this.add.graphics();
+        tabBg.fillStyle(0x5d4037, 1);
+        tabBg.fillRect(0, tabY, width, tabH);
+        tabBg.fillStyle(0x6d4c41, 1);
+        tabBg.fillRect(0, tabY, width, 2);
+
+        const tabs = [
+            { icon: '🏠', label: 'HOME', active: true },
+            { icon: '🏆', label: 'RANK', action: () => this.scene.start('RankingScene') },
+            { icon: '🎉', label: 'EVENT', action: () => this.scene.start('EventScene') },
+        ];
+
+        const tabW = width / tabs.length;
+        for (let i = 0; i < tabs.length; i++) {
+            const tx = tabW * i + tabW / 2;
+            const ty = tabY + tabH / 2;
+            const tab = tabs[i];
+
+            if (tab.active) {
+                const activeBg = this.add.graphics();
+                activeBg.fillStyle(0x8d6e63, 1);
+                activeBg.fillRoundedRect(tx - tabW / 2 + 4, tabY + 4, tabW - 8, tabH - 8, 8);
+            }
+
+            this.add.text(tx, ty - 8, tab.icon, {
+                fontSize: '20px'
+            }).setOrigin(0.5);
+
+            if (tab.label) {
+                this.add.text(tx, ty + 16, tab.label, {
+                    fontSize: '10px', color: '#fff', fontFamily: 'Jua', fontStyle: 'bold'
+                }).setOrigin(0.5);
+            }
+
+            if (tab.action) {
+                this.add.zone(tx, tabY + tabH / 2, tabW, tabH)
+                    .setInteractive()
+                    .on('pointerdown', tab.action);
+            }
+        }
     }
 
     _showSettings() {
@@ -196,42 +337,41 @@ export class MainScene extends Phaser.Scene {
 
         const { width, height } = this.scale;
         const panelW = width * 0.88;
-        const panelX = (width - panelW) / 2;
 
         this.settingsPanel = this.add.container(0, 0).setDepth(100);
 
-        // Dim background
         const dim = this.add.graphics();
         dim.fillStyle(0x000000, 0.5);
         dim.fillRect(-100, -100, width + 200, height + 200);
         dim.setInteractive(new Phaser.Geom.Rectangle(-100, -100, width + 200, height + 200), Phaser.Geom.Rectangle.Contains);
         this.settingsPanel.add(dim);
 
-        // Calculate layout dimensions first
         const cardW = panelW * 0.38;
         const gap = panelW * 0.05;
         const blockSizeCalc = Math.min(cardW * 0.35, 36);
         const colorCardH = 15 + blockSizeCalc * 4 + 6 * 3 + 16 + 15;
         const cbCardH = 15 + blockSizeCalc * 3 + 6 * 2 + 16 + 15;
 
-        // Compute total panel height
         const topPadding = 30;
         const sectionGap = 24;
-        let contentH = topPadding + 24; // title
-        contentH += 10 + colorCardH; // color mode cards
-        contentH += sectionGap + 24 + 10 + cbCardH; // cb section
-        contentH += sectionGap + 24 + 10 + 36; // pack section
-        contentH += 20 + 36 + 20; // close button + bottom padding
+        let contentH = topPadding + 24;
+        contentH += 10 + colorCardH;
+        contentH += sectionGap + 24 + 10 + cbCardH;
+        contentH += sectionGap + 24 + 10 + 44; // new game section
+        contentH += 20 + 36 + 20;
         const panelH = contentH;
+        const panelX = (width - panelW) / 2;
         const panelY = (height - panelH) / 2;
 
-        // Panel background
         const panel = this.add.graphics();
         panel.fillStyle(0xffffff, 0.97);
         panel.fillRoundedRect(panelX, panelY, panelW, panelH, 16);
         this.settingsPanel.add(panel);
 
-        // --- Color mode section ---
+        const leftX = width / 2 - cardW - gap / 2;
+        const rightX = width / 2 + gap / 2;
+
+        // --- Color mode ---
         let cy = panelY + topPadding;
         const title = this.add.text(width / 2, cy, '색상 표시 방법', {
             fontSize: '20px', color: '#333', fontFamily: 'Jua', fontStyle: 'bold'
@@ -239,15 +379,12 @@ export class MainScene extends Phaser.Scene {
         this.settingsPanel.add(title);
 
         const currentMode = localStorage.getItem('paintSheep_colorMode') || 'mixed';
-        const leftX = width / 2 - cardW - gap / 2;
-        const rightX = width / 2 + gap / 2;
-
         cy += 34;
         this._drawOptionCard(leftX, cy, cardW, null, 'mixed', '색 혼합', currentMode === 'mixed');
         this._drawOptionCard(rightX, cy, cardW, null, 'diagonal', '대각선 분할', currentMode === 'diagonal');
         cy += colorCardH;
 
-        // --- Color blind section ---
+        // --- Color blind ---
         cy += sectionGap;
         const cbMode = localStorage.getItem('paintSheep_colorBlind') === 'true';
         const cbTitle = this.add.text(width / 2, cy, '색약 모드', {
@@ -260,46 +397,35 @@ export class MainScene extends Phaser.Scene {
         this._drawCbCard(rightX, cy, cardW, 'on', cbMode === true, currentMode);
         cy += cbCardH;
 
-        // --- Stage pack section ---
+        // --- Start from beginning ---
         cy += sectionGap;
-        const currentPack = localStorage.getItem('paintSheep_stagePack') || 'NoMaxStages';
-        const packTitle = this.add.text(width / 2, cy, '스테이지 팩', {
+        const newGameTitle = this.add.text(width / 2, cy, '처음부터', {
             fontSize: '20px', color: '#333', fontFamily: 'Jua', fontStyle: 'bold'
         }).setOrigin(0.5);
-        this.settingsPanel.add(packTitle);
+        this.settingsPanel.add(newGameTitle);
 
-        const packs = [
-            { key: 'NoMaxStages', label: '기본' },
-            { key: 'BlackStages', label: 'Black' },
-            { key: 'MegaStages', label: 'Mega' },
-        ];
-        const packBtnW = (panelW - gap * 4) / 3;
         cy += 30;
-        const packStartX = panelX + gap;
+        const newBtnW = panelW * 0.6;
+        const newBtnGfx = this.add.graphics();
+        newBtnGfx.fillStyle(0xe74c3c, 1);
+        newBtnGfx.fillRoundedRect(width / 2 - newBtnW / 2, cy, newBtnW, 44, 10);
+        this.settingsPanel.add(newBtnGfx);
 
-        for (let i = 0; i < packs.length; i++) {
-            const bx = packStartX + i * (packBtnW + gap);
-            const isSelected = currentPack === packs[i].key;
-            const btnGfx = this.add.graphics();
-            btnGfx.fillStyle(isSelected ? 0x4CAF50 : 0xe0e0e0, 1);
-            btnGfx.fillRoundedRect(bx, cy, packBtnW, 36, 8);
-            this.settingsPanel.add(btnGfx);
+        const newBtnText = this.add.text(width / 2, cy + 22, '진행 초기화 후 시작', {
+            fontSize: '15px', color: '#fff', fontFamily: 'Jua', fontStyle: 'bold'
+        }).setOrigin(0.5);
+        this.settingsPanel.add(newBtnText);
 
-            const btnText = this.add.text(bx + packBtnW / 2, cy + 18, packs[i].label, {
-                fontSize: '14px', color: isSelected ? '#fff' : '#333', fontFamily: 'Jua', fontStyle: 'bold'
-            }).setOrigin(0.5);
-            this.settingsPanel.add(btnText);
-
-            const btnZone = this.add.zone(bx + packBtnW / 2, cy + 18, packBtnW, 36).setInteractive();
-            btnZone.on('pointerdown', () => {
-                localStorage.setItem('paintSheep_stagePack', packs[i].key);
-                this.settingsPanel.destroy(true);
-                this.settingsPanel = null;
-                this._showSettings();
-            });
-            this.settingsPanel.add(btnZone);
-        }
-        cy += 36;
+        const newBtnZone = this.add.zone(width / 2, cy + 22, newBtnW, 44).setInteractive();
+        newBtnZone.on('pointerdown', async () => {
+            await saveProgress({ stage: 1, perfectCount: 0 });
+            await resetScore();
+            this.settingsPanel.destroy(true);
+            this.settingsPanel = null;
+            this.scene.start('GameScene', { level: CONFIG.TUTORIAL_COUNT });
+        });
+        this.settingsPanel.add(newBtnZone);
+        cy += 44;
 
         // Close button
         cy += 20;
@@ -381,32 +507,13 @@ export class MainScene extends Phaser.Scene {
                 gfx.fillStyle(ex.colors[0], 1);
                 gfx.fillRoundedRect(previewCx - half, cy - half, blockSize, blockSize, 6);
                 gfx.fillStyle(ex.colors[0], 1);
-                gfx.beginPath();
-                gfx.moveTo(previewCx - half, cy - half);
-                gfx.lineTo(previewCx + t, cy - half);
-                gfx.lineTo(previewCx - half, cy + t);
-                gfx.closePath();
-                gfx.fillPath();
+                gfx.beginPath(); gfx.moveTo(previewCx - half, cy - half); gfx.lineTo(previewCx + t, cy - half); gfx.lineTo(previewCx - half, cy + t); gfx.closePath(); gfx.fillPath();
                 gfx.fillStyle(ex.colors[1], 1);
-                gfx.beginPath();
-                gfx.moveTo(previewCx + t, cy - half);
-                gfx.lineTo(previewCx + half, cy - half);
-                gfx.lineTo(previewCx + half, cy - t);
-                gfx.lineTo(previewCx - t, cy + half);
-                gfx.lineTo(previewCx - half, cy + half);
-                gfx.lineTo(previewCx - half, cy + t);
-                gfx.closePath();
-                gfx.fillPath();
+                gfx.beginPath(); gfx.moveTo(previewCx + t, cy - half); gfx.lineTo(previewCx + half, cy - half); gfx.lineTo(previewCx + half, cy - t); gfx.lineTo(previewCx - t, cy + half); gfx.lineTo(previewCx - half, cy + half); gfx.lineTo(previewCx - half, cy + t); gfx.closePath(); gfx.fillPath();
                 gfx.fillStyle(ex.colors[2], 1);
-                gfx.beginPath();
-                gfx.moveTo(previewCx + half, cy - t);
-                gfx.lineTo(previewCx + half, cy + half);
-                gfx.lineTo(previewCx - t, cy + half);
-                gfx.closePath();
-                gfx.fillPath();
+                gfx.beginPath(); gfx.moveTo(previewCx + half, cy - t); gfx.lineTo(previewCx + half, cy + half); gfx.lineTo(previewCx - t, cy + half); gfx.closePath(); gfx.fillPath();
             }
 
-            // Rounded mask
             const mask = this.make.graphics();
             mask.fillStyle(0xffffff);
             mask.fillRoundedRect(previewCx - half, cy - half, blockSize, blockSize, 6);
@@ -486,7 +593,6 @@ export class MainScene extends Phaser.Scene {
         card.strokeRoundedRect(x, y, w, cardH, 12);
         this.settingsPanel.add(card);
 
-        // Preview examples
         const previewCx = x + w / 2;
         const previewStartY = y + topPad;
 
@@ -495,14 +601,12 @@ export class MainScene extends Phaser.Scene {
         this._drawColorPreview(previewCx, previewStartY + blockSize / 2 + previewGap * 2, blockSize, mode, [0xFFD600, 0x2979FF], 0x00C853);
         this._drawColorPreview(previewCx, previewStartY + blockSize / 2 + previewGap * 3, blockSize, mode, [0xE53935, 0xFFD600, 0x2979FF], 0x212121);
 
-        // Label below previews
         const labelY = y + previewBottom + labelH / 2 + 4;
         const labelText = this.add.text(x + w / 2, labelY, label, {
             fontSize: '13px', color: selected ? '#1565C0' : '#666', fontFamily: 'Jua', fontStyle: 'bold'
         }).setOrigin(0.5);
         this.settingsPanel.add(labelText);
 
-        // Interactive zone
         const zone = this.add.zone(x + w / 2, y + cardH / 2, w, cardH).setInteractive();
         zone.on('pointerdown', () => {
             localStorage.setItem('paintSheep_colorMode', mode);
@@ -530,57 +634,22 @@ export class MainScene extends Phaser.Scene {
                 gfx.fillStyle(colors[0], 1);
                 gfx.fillRoundedRect(cx - half, cy - half, size, size, 6);
                 gfx.fillStyle(colors[0], 1);
-                gfx.beginPath();
-                gfx.moveTo(cx - half, cy - half);
-                gfx.lineTo(cx + t, cy - half);
-                gfx.lineTo(cx - half, cy + t);
-                gfx.closePath();
-                gfx.fillPath();
+                gfx.beginPath(); gfx.moveTo(cx - half, cy - half); gfx.lineTo(cx + t, cy - half); gfx.lineTo(cx - half, cy + t); gfx.closePath(); gfx.fillPath();
                 gfx.fillStyle(colors[1], 1);
-                gfx.beginPath();
-                gfx.moveTo(cx + t, cy - half);
-                gfx.lineTo(cx + half, cy - half);
-                gfx.lineTo(cx + half, cy - t);
-                gfx.lineTo(cx - t, cy + half);
-                gfx.lineTo(cx - half, cy + half);
-                gfx.lineTo(cx - half, cy + t);
-                gfx.closePath();
-                gfx.fillPath();
+                gfx.beginPath(); gfx.moveTo(cx + t, cy - half); gfx.lineTo(cx + half, cy - half); gfx.lineTo(cx + half, cy - t); gfx.lineTo(cx - t, cy + half); gfx.lineTo(cx - half, cy + half); gfx.lineTo(cx - half, cy + t); gfx.closePath(); gfx.fillPath();
                 gfx.fillStyle(colors[2], 1);
-                gfx.beginPath();
-                gfx.moveTo(cx + half, cy - t);
-                gfx.lineTo(cx + half, cy + half);
-                gfx.lineTo(cx - t, cy + half);
-                gfx.closePath();
-                gfx.fillPath();
+                gfx.beginPath(); gfx.moveTo(cx + half, cy - t); gfx.lineTo(cx + half, cy + half); gfx.lineTo(cx - t, cy + half); gfx.closePath(); gfx.fillPath();
             }
         } else {
-            // Mixed: single solid color
             gfx.fillStyle(mixedColor, 1);
             gfx.fillRoundedRect(cx - half, cy - half, size, size, 6);
         }
 
-        // Rounded mask
         const mask = this.make.graphics();
         mask.fillStyle(0xffffff);
         mask.fillRoundedRect(cx - half, cy - half, size, size, 6);
         gfx.setMask(mask.createGeometryMask());
 
         this.settingsPanel.add(gfx);
-    }
-
-    _createButton(cx, cy, w, h, label, color, callback, alpha = 1, disabled = false) {
-        const bg = this.add.graphics();
-        bg.fillStyle(color, alpha);
-        bg.fillRoundedRect(cx - w / 2, cy - h / 2, w, h, 10);
-
-        const text = this.add.text(cx, cy, label, {
-            fontSize: '18px', color: '#fff', fontFamily: 'Jua', fontStyle: 'bold'
-        }).setOrigin(0.5).setAlpha(alpha);
-
-        if (!disabled) {
-            const zone = this.add.zone(cx, cy, w, h).setInteractive();
-            zone.on('pointerdown', callback);
-        }
     }
 }
